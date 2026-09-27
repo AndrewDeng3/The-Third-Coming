@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE log SYSTEM "logger.dtd">
+<log>
+<record>
+  <date>2023-02-04T00:01:08.828671400Z</date>
+  <millis>1675468868828</millis>
+  <nanos>671400</nanos>
+  <sequence>9</sequence>
+  <logger>com.group_finity.mascot.config.AnimationBuilder</logger>
+  <level>SEVERE</level>
+  <class>com.group_finity.mascot.config.AnimationBuilder</class>
+  <method>loadPose</method>
+  <thread>1</thread>
+  <message>Failed to load image: /Peter/Second Coming0001.png</message>
+</record>
+<record>
+  <date>2023-02-04T00:01:08.839681500Z</date>
+  <millis>1675468868839</millis>
+  <nanos>681500</nanos>
+  <sequence>10</sequence>
+  <logger>com.group_finity.mascot.Main</logger>
+  <level>SEVERE</level>
+  <class>com.group_finity.mascot.Main</class>
+  <method>loadConfiguration</method>
+  <thread>1</thread>
+  <message>Failed to load configuration files</message>
+  <exception>
+    <message>java.io.IOException: Failed to load image /Peter/Second Coming0001.png</message>
+    <frame>
+      <class>com.group_finity.mascot.config.AnimationBuilder</class>
+      <method>loadPose</method>
+      <line>73</line>
+    </frame>
+    <frame>
+      <class>com.group_finity.mascot.config.AnimationBuilder</class>
+      <method>&lt;init&gt;</method>
+      <line>43</line>
+    </frame>
+    <frame>
+      <class>com.group_finity.mascot.config.ActionBuilder</class>
+      <method>&lt;init&gt;</method>
+      <line>56</line>
+    </frame>
+    <frame>
+      <class>com.group_finity.mascot.config.Configuration</class>
+      <method>load</method>
+      <line>61</line>
+    </frame>
+    <frame>
+      <class>com.group_finity.mascot.Main</class>
+      <method>loadConfiguration</method>
+      <line>357</line>
+    </frame>
+    <frame>
+      <class>com.group_finity.mascot.Main</class>
+      <method>run</method>
+      <line>283</line>
+    </frame>
+    <frame>
+      <class>com.group_finity.mascot.Main</class>
+      <method>main</method>
+      <line>133</line>
+    </frame>
+  </exception>
+</record>
+</log>
