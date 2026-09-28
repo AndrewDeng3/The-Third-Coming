@@ -91,6 +91,10 @@ class OSDriver:
     clipboard_is_text_only = staticmethod(drv.clipboard_is_text_only)
     get_clipboard_text = staticmethod(drv.get_clipboard_text)
     set_clipboard_text = staticmethod(drv.set_clipboard_text)
+    unicode_text = staticmethod(drv.unicode_text)
+    precise_timer = staticmethod(drv.precise_timer)
+    snapshot_clipboard = staticmethod(drv.snapshot_clipboard)
+    restore_clipboard = staticmethod(drv.restore_clipboard)
 
     @staticmethod
     def foreground() -> int:
@@ -163,6 +167,16 @@ class Executor:
 
     def run(self, steps: list, target_hwnd: int) -> ExecResult:
         t0 = time.perf_counter()
+        timer = getattr(self.driver, "precise_timer", None)
+        if timer:
+            timer(True)
+        try:
+            return self._run(steps, target_hwnd, t0)
+        finally:
+            if timer:
+                timer(False)
+
+    def _run(self, steps: list, target_hwnd: int, t0: float) -> ExecResult:
         self._target = target_hwnd
         self._target_pid = self.driver.window_pid(target_hwnd)
         self._events = 0
@@ -241,24 +255,31 @@ class Executor:
             self._check((step.x, step.y))  # refuse a bad destination before the cursor moves at all
             self._aim = (step.x, step.y)
             start = d.cursor_pos()
-            dist = abs(step.x - start[0]) + abs(step.y - start[1])
-            n = max(4, min(60, int(dist / 25)))
-            path = drv.bezier_path(start, (step.x, step.y), n, bend=0.12)
+            dist = ((step.x - start[0]) ** 2 + (step.y - start[1]) ** 2) ** 0.5
+            # Smooth, time-based motion (like a quick human flick): 0.1 s for a nudge .. 0.35 s across the screen,
+            # one position per ~7 ms, eased in and out along a gentle curve.
+            duration = min(0.35, 0.1 + dist / 6000)
+            n = max(3, int(duration / 0.007))
+            path = drv.bezier_path(start, (step.x, step.y), n, bend=0.08)
+            began = time.perf_counter()
             for i, pt in enumerate(path):
                 self._check(pt if i == len(path) - 1 else None)  # only the destination must be on target
                 d.move_to(*pt)
                 self._sent()
-                self._wait(0.008)
+                ahead = began + duration * (i + 1) / n - time.perf_counter()
+                if ahead > 0:
+                    self._wait(ahead)
         elif isinstance(step, Click):
             gap = 1.0 / self.cfg.max_clicks_per_sec - (time.perf_counter() - self._last_click)
             if gap > 0:
                 self._wait(gap)
+            self._wait(0.06)  # let the page register the hover (menus, buttons) before pressing
             for i in range(step.count):
                 pt = self._reaim()
                 self._check(pt, press=True)
                 d.mouse_button(step.button, True)
                 self._sent()
-                self._wait(0.04)
+                self._wait(0.05)
                 d.mouse_button(step.button, False)  # always lift, even if cancelled mid-click
                 self._sent()
                 if i + 1 < step.count:
@@ -285,8 +306,16 @@ class Executor:
                 for m in reversed(pressed):
                     d.key(m, up=True)
         elif isinstance(step, Type):
-            if len(step.text) >= self.cfg.paste_threshold and d.clipboard_is_text_only():
+            if len(step.text) >= self.cfg.paste_threshold and self._can_borrow_clipboard():
                 self._paste(step.text)
+            elif hasattr(d, "unicode_text"):
+                # Short runs of characters per SendInput: fast, even rhythm, no dropped keys.
+                chunk = 6
+                for i in range(0, len(step.text), chunk):
+                    self._check()
+                    d.unicode_text(step.text[i:i + chunk])
+                    self._sent()
+                    self._wait(0.012)
             else:
                 interval = 60.0 / (self.cfg.typing_wpm * 5)
                 if len(step.text) > 60:  # long text (the clipboard couldn't be borrowed): type it quickly
@@ -322,19 +351,32 @@ class Executor:
         self._sent()
         return self._aim
 
-    def _paste(self, text: str) -> None:
-        """Long text: one Ctrl+V instead of thousands of keystrokes; the user's clipboard is restored."""
+    def _can_borrow_clipboard(self) -> bool:
         d = self.driver
-        saved = d.get_clipboard_text()
+        if hasattr(d, "snapshot_clipboard"):
+            self._saved_clip = d.snapshot_clipboard()
+            return self._saved_clip is not None
+        return d.clipboard_is_text_only()
+
+    def _paste(self, text: str) -> None:
+        """Long text: one Ctrl+V instead of hundreds of keystrokes. The user's clipboard - everything on it,
+        formatting and images included - is put back exactly afterwards."""
+        d = self.driver
+        full = getattr(self, "_saved_clip", None)
+        saved = None if full is not None else d.get_clipboard_text()
         self._check()
         if not d.set_clipboard_text(text):
             raise Aborted("error", "couldn't use the clipboard")
         try:
             self._wait(0.05)
             self._do(Keys("ctrl+v"))
-            self._wait(0.25)  # let the app read the clipboard before we put the old contents back
+            self._wait(0.3)  # let the app read the clipboard before we put the old contents back
         finally:
-            d.set_clipboard_text(saved)
+            if full is not None:
+                d.restore_clipboard(full)
+            else:
+                d.set_clipboard_text(saved)
+            self._saved_clip = None
 
     def close(self) -> None:
         self.cancel("shutting down")

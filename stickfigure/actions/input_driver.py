@@ -122,6 +122,21 @@ def key(name: str, up: bool = False) -> None:
     _send(_key(VK[name], up=up))
 
 
+def unicode_text(text: str) -> None:
+    """Type a short run of characters in ONE SendInput call (smooth and fast; no per-key timing jitter).
+    Newlines are sent as the Enter key. Keep runs short (the executor sends ~8 chars at a time)."""
+    events: list[INPUT] = []
+    for ch in text:
+        if ch == "\n":
+            events += [_key(VK["enter"]), _key(VK["enter"], up=True)]
+            continue
+        units = ch.encode("utf-16-le")
+        codes = [int.from_bytes(units[i:i + 2], "little") for i in range(0, len(units), 2)]
+        events += [_key(scan=c, unicode=True) for c in codes] + [_key(scan=c, unicode=True, up=True) for c in codes]
+    if events:
+        _send(*events)
+
+
 def unicode_char(ch: str) -> None:
     """Type one character regardless of keyboard layout. Handles astral chars via UTF-16 pairs."""
     units = ch.encode("utf-16-le")
@@ -165,7 +180,18 @@ def cursor_pos() -> tuple[int, int]:
     return (p.x, p.y)
 
 
-# -- clipboard (text only) ------------------------------------------------------------------
+# -- precise timing -----------------------------------------------------------------------
+
+_winmm = ctypes.WinDLL("winmm")
+
+
+def precise_timer(on: bool) -> None:
+    """Ask Windows for 1 ms timer resolution while we're sending input (default ticks are ~15.6 ms, which makes
+    cursor motion and typing stutter). Always paired: on at the start of a batch, off at the end."""
+    (_winmm.timeBeginPeriod if on else _winmm.timeEndPeriod)(1)
+
+
+# -- clipboard ----------------------------------------------------------------------------------
 
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
@@ -209,6 +235,73 @@ def clipboard_is_text_only() -> bool:
         user32.CloseClipboard()
 
 
+kernel32.GlobalSize.argtypes = [wintypes.HGLOBAL]
+kernel32.GlobalSize.restype = ctypes.c_size_t
+# Formats whose data isn't a plain memory block (GDI handles, owner-drawn): can't be copied byte-for-byte.
+_HANDLE_FORMATS = {2, 3, 9, 14, 0x0080, 0x0082, 0x0083, 0x008E}  # BITMAP, METAFILEPICT, PALETTE, ENHMETAFILE, owner/dsp
+
+
+user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+user32.RegisterClipboardFormatW.restype = wintypes.UINT
+# Windows' documented marker: content with this format is kept out of clipboard history (Win+V) and cloud sync.
+_EXCLUDE_FROM_HISTORY = user32.RegisterClipboardFormatW("ExcludeClipboardContentFromMonitorProcessing")
+
+
+def _mark_private() -> None:
+    """Call with the clipboard open: our temporary paste (and the restore) don't pile up in Win+V history."""
+    h = kernel32.GlobalAlloc(GMEM_MOVEABLE, 1)
+    if h and not user32.SetClipboardData(_EXCLUDE_FROM_HISTORY, h):
+        kernel32.GlobalFree(h)
+
+
+def snapshot_clipboard() -> list[tuple[int, bytes]] | None:
+    """Everything on the clipboard (text, rich text, HTML, images as DIB, file lists...) as raw bytes, so it
+    can be put back exactly after we borrow the clipboard to paste. None if something can't be copied."""
+    if not _open_clipboard():
+        return None
+    try:
+        out: list[tuple[int, bytes]] = []
+        fmt = 0
+        while True:
+            fmt = user32.EnumClipboardFormats(fmt)
+            if not fmt:
+                break
+            if fmt in _HANDLE_FORMATS or 0x0300 <= fmt <= 0x03FF or fmt == _EXCLUDE_FROM_HISTORY:  # GDI objects / synthesized from others
+                continue
+            h = user32.GetClipboardData(fmt)
+            if not h:
+                continue
+            size = kernel32.GlobalSize(h)
+            p = kernel32.GlobalLock(h)
+            if not p:
+                return None  # not a memory block: don't risk losing it
+            try:
+                out.append((fmt, ctypes.string_at(p, size)))
+            finally:
+                kernel32.GlobalUnlock(h)
+        return out
+    finally:
+        user32.CloseClipboard()
+
+
+def restore_clipboard(items: list[tuple[int, bytes]]) -> bool:
+    if not _open_clipboard():
+        return False
+    try:
+        user32.EmptyClipboard()
+        for fmt, data in items:
+            h = kernel32.GlobalAlloc(GMEM_MOVEABLE, max(1, len(data)))
+            p = kernel32.GlobalLock(h)
+            ctypes.memmove(p, data, len(data))
+            kernel32.GlobalUnlock(h)
+            if not user32.SetClipboardData(fmt, h):
+                kernel32.GlobalFree(h)
+        _mark_private()
+        return True
+    finally:
+        user32.CloseClipboard()
+
+
 def get_clipboard_text() -> str | None:
     if not _open_clipboard():
         return None
@@ -241,6 +334,7 @@ def set_clipboard_text(text: str | None) -> bool:
         if not user32.SetClipboardData(CF_UNICODETEXT, h):
             kernel32.GlobalFree(h)
             return False
+        _mark_private()
         return True
     finally:
         user32.CloseClipboard()

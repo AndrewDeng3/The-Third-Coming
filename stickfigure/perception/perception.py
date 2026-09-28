@@ -165,6 +165,27 @@ class Perception:
         timings["total_ms"] = (time.perf_counter() - t0) * 1000
         return Found(cand.el, cand.score, method, target, timings)
 
+    async def read_document(self, target: Target) -> str:
+        """The text of the window's main document/editor, top to bottom: from UIA if the app exposes it,
+        otherwise by OCR of the text area (Google Docs draws its text as pixels)."""
+        uia, _, _ = await self.elements(target)
+        bodies = [e for e in uia if e.role in ("Document", "Edit") and not e.is_password]
+        body = max(bodies, key=lambda e: e.rect.width * e.rect.height, default=None)
+        r = target.rect
+        if body is not None and body.rect.width * body.rect.height >= 0.15 * r.width * r.height:
+            region = Rect(max(body.rect.left, r.left), max(body.rect.top, r.top),
+                          min(body.rect.right, r.right), min(body.rect.bottom, r.bottom))
+        else:  # no obvious text area: read the window below its toolbars
+            region = Rect(r.left, r.top + r.height * 0.18, r.right, r.bottom)
+        if region.width < 20 or region.height < 20:
+            return ""
+        try:
+            lines = await asyncio.wait_for(asyncio.wrap_future(self.ocr.read(region)), UIA_TIMEOUT)
+        except asyncio.TimeoutError:
+            return ""
+        lines.sort(key=lambda e: (round(e.rect.top / 12), e.rect.left))
+        return "\n".join(e.name for e in lines)
+
     async def describe(self, target: Target) -> str:
         """A compact text description of the window for the chat model."""
         uia, ocr, _ = await self.elements(target, force_ocr=True)
