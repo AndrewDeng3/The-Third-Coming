@@ -8,4 +8,6 @@ Generally low latency.
 Can build blocks.
 And more, just right click on the third coming!
 
+Press escape to cancel any action involving the movement of your cursor. A GPU is required.
+
 Caution: The Third Coming may act similar to a virus. Simply turn off mischief and adventures to minimize any potential damage.
