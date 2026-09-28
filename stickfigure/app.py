@@ -26,6 +26,7 @@ from stickfigure.actions.mischief import Mischief
 from stickfigure.agent.agent import Agent, ollama_embedder
 from stickfigure.agent.emotion import Emotion
 from stickfigure.agent.growth import Growth
+from stickfigure.awareness import Awareness
 from stickfigure.agent.memory import Memory
 from stickfigure.agent.ollama import Ollama, OllamaError
 from stickfigure.companion import Companion
@@ -104,6 +105,10 @@ class StickFigureApp:
         self.emotion = Emotion.from_dict(self.memory.get("emotion"))
         self.agent = Agent(self.ollama, self.memory, self.emotion)
         self.growth = Growth(self.memory)  # who it's becoming: traits + a journal about itself
+        # Constant, cheap awareness of what the user is doing (apps, titles, activity; no screenshots).
+        self.awareness = Awareness()
+        self.awareness.enabled = self.cfg.awareness
+        self.agent.awareness = self.awareness.summary
         self.agent.growth = self.growth
         # Permanent structures persist across restarts.
         self.blocks.on_persist = lambda data: self.memory.put("permanent_blocks", data)
@@ -549,6 +554,32 @@ class StickFigureApp:
             self._finish_speech()
             self.chat.add_assistant(text)
 
+    def _sense(self) -> None:
+        if not self.awareness.enabled:
+            return
+        fg = int(win32.user32.GetForegroundWindow() or 0)
+        if fg and win32.window_pid(fg) == os.getpid():
+            process, title, private = "the chat with you", "", False
+        elif fg:
+            process, title = win32.process_name(fg), win32.window_title(fg)
+            private = window_problem(WindowInfo(fg, process, win32.class_name(fg), title)) is not None
+        else:
+            process, title, private = "", "", False
+        self.awareness.observe(time.time(), process, title, private, win32.cursor_pos(), win32.user_idle_seconds())
+        self._sense_n += 1
+        if self._sense_n % 4 == 0 and fg and not private and win32.window_pid(fg) != os.getpid():
+            loop = asyncio.get_event_loop()
+
+            def got(fut) -> None:
+                try:
+                    el = fut.result()
+                except Exception:  # noqa: BLE001 - focus can vanish mid-read
+                    return
+                if el is not None and not el.is_password:
+                    loop.call_soon_threadsafe(self.awareness.set_focus, el.describe())
+
+            self.element_reader.focused().add_done_callback(got)
+
     async def _scan_elements(self) -> None:
         if self._scanning or self._paused:
             return
@@ -698,6 +729,7 @@ class StickFigureApp:
             "stt_model": self.cfg.stt_model, "mischief": self.mischief.enabled, "supervised": self.cfg.supervised,
             "notice_activity": self.companion.notice_enabled,
             "adventures": self.adventure.enabled,
+            "awareness": self.awareness.enabled,
             "chat_model": self.cfg.chat_model,
         }
 
@@ -751,6 +783,7 @@ class StickFigureApp:
         self.act_mischief.setChecked(values["mischief"])
         self.companion.notice_enabled = values["notice_activity"]
         self.act_adventure.setChecked(values["adventures"])
+        self.awareness.enabled = values["awareness"]
         if needs_restart:
             self.bubble.say("Some of those changes kick in after a restart!", hold=4)
 
@@ -826,6 +859,11 @@ class StickFigureApp:
         self._element_timer = QTimer()
         self._element_timer.timeout.connect(lambda: asyncio.ensure_future(self._scan_elements()))
         self._element_timer.start(750)
+        # Awareness: sample the window in front ~2x a second; the focused element every 2 s.
+        self._aware_timer = QTimer()
+        self._aware_timer.timeout.connect(self._sense)
+        self._aware_timer.start(500)
+        self._sense_n = 0
         self._scanning = False
         self._scan_skip = 0
         self._mood_timer.start(2000)

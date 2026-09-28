@@ -61,6 +61,7 @@ class Agent:
         self.on_action: Callable[[str], None] = lambda action: None
         self.growth = None  # agent.growth.Growth: who it's becoming (set by the app)
         self.on_sentiment: Callable[[float], None] = lambda s: None
+        self.awareness: Callable[[], str] = lambda: ""  # what the user is doing right now (set by the app)
 
     # -- public ---------------------------------------------------------------------------
 
@@ -179,7 +180,8 @@ class Agent:
                 episodes: list[Fact] | None = None) -> str:
         return system_prompt(self.name, self.emotion, situation, facts, observation=observation,
                              user_name=self.user_name, episodes=episodes,
-                             self_text=self.growth.describe() if self.growth is not None else "")
+                             self_text=self.growth.describe() if self.growth is not None else "",
+                             aware=self.awareness())
 
     async def reflect(self) -> bool:
         """Look back on recent life and grow a little (journal notes, trait shifts). One model call."""

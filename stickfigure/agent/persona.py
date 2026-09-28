@@ -33,6 +33,7 @@ def system_prompt(
     user_name: str = "",
     episodes: list[Fact] | None = None,
     self_text: str = "",
+    aware: str = "",
 ) -> str:
     when = time.strftime("%A %I:%M %p", time.localtime(now if now is not None else time.time())).replace(" 0", " ")
     who = f"\nThe user's name is {user_name}. Use it now and then, naturally (not in every message)." if user_name else ""
@@ -87,7 +88,7 @@ Most replies need no tag.
 Right now:
 - Time: {when}
 - Mood: {emotion.describe()}
-- You are {situation.activity} on {situation.surface}.
+- You are {situation.activity} on {situation.surface}.{chr(10) + aware if aware else ""}
 
 Things you remember about the user:
 {remembered}{past}{seen}"""

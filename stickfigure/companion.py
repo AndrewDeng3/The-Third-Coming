@@ -207,8 +207,9 @@ class Companion:
         try:
             idle = win32.user_idle_seconds()
             places = self.places()[:14]
-            context = {"user": (f"away from the computer for {idle:.0f}s" if idle > 30 else
-                                f"active right now ({self.user_activity()})"),
+            aware = self.agent.awareness()
+            context = {"user": aware or (f"away from the computer for {idle:.0f}s" if idle > 30 else
+                                         f"active right now ({self.user_activity()})"),
                        "places": "\n".join(f"[{i}] {label}" for i, (label, _) in enumerate(places)),
                        "personality": self.growth.short() if self.growth is not None else "still forming"}
             choice = await self.agent.think(self.situation(), context, self._recent_choices)

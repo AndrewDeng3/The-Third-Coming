@@ -63,6 +63,10 @@ class SettingsPanel(QWidget):
         self.notice.setToolTip("Only the window you're using, never password/banking/security windows. "
                                "Stays on this computer and isn't saved to long-term memory.")
         self.notice.setChecked(v.get("notice_activity", True))
+        self.awareness = QCheckBox("Keep track of what I'm doing (apps & window titles)")
+        self.awareness.setToolTip("Which app and page you're in, switches, typing vs. mouse vs. away, and time per app. "
+                                  "No screenshots, never saved to disk, private windows aren't named.")
+        self.awareness.setChecked(v.get("awareness", True))
         self.adventures = QCheckBox("Explore the web / peek at my tabs when I'm away")
         self.adventures.setToolTip("Opens a new tab to look up something it's curious about (and closes it), or "
                                    "flips to your next browser tab and back. Never clicks, types, or touches files; "
@@ -89,6 +93,7 @@ class SettingsPanel(QWidget):
         form.addRow("Listening", self.stt)
         form.addRow(self._section("Behavior"))
         form.addRow("", self.mischief)
+        form.addRow("", self.awareness)
         form.addRow("", self.notice)
         form.addRow("", self.adventures)
         form.addRow("", self.supervised)
@@ -134,6 +139,7 @@ class SettingsPanel(QWidget):
             "stt_model": self.stt.currentData(),
             "mischief": self.mischief.isChecked(),
             "notice_activity": self.notice.isChecked(),
+            "awareness": self.awareness.isChecked(),
             "adventures": self.adventures.isChecked(),
             "supervised": self.supervised.isChecked(),
             "chat_model": self.chat_model.text().strip() or "llama3.2:3b",
