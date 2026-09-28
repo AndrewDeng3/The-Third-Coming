@@ -172,7 +172,9 @@ class Brain:
             (20 * (1.3 - e.energy) * (2 - explorer), "idle", lambda: self._idle(random.uniform(1.5, 4.0))),
             (20, "stroll", self._stroll),
             (12 * (1.5 - e.energy) * (2 - explorer), "sit", lambda: self._sit(random.uniform(5, 12))),
-            (30 * (0.4 + e.energy) * (0.5 + e.curiosity) * explorer, "travel", self._travel_somewhere),
+            (10 * (0.4 + e.energy) * (0.5 + e.curiosity) * explorer, "travel", self._travel_somewhere),
+            # Home is the ground: after a visit up high it heads back down to the taskbar.
+            (45 * (cur[0] != "floor") * (2 - explorer), "go_home", self._go_home),
             (7 * (0.3 + e.curiosity) * (e.energy > 0.4), "build", self._build_somewhere),
             (12 * max(0.0, e.happiness - 0.6) * goofy, "hop", lambda: self._hops(random.randint(1, 3))),
             (10 * max(0.0, e.affection - 0.55), "come", self._come),
@@ -180,7 +182,7 @@ class Brain:
             (4 * (e.energy > 0.5) * (0.4 + e.curiosity) * near_cursor * daring, "ride", self._ride_cursor),
             (4 * (e.energy > 0.55) * max(0.0, e.happiness - 0.3) * goofy, "chase", self._chase),
             (4 * max(0.0, e.affection - 0.4) * near_cursor, "follow", lambda: self._follow_cursor(random.uniform(15, 30))),
-            (14 * (0.4 + e.curiosity) * (e.energy > 0.3) * bool(self.world.element_shapes) * explorer, "climb_element",
+            (4 * (0.4 + e.curiosity) * (e.energy > 0.3) * bool(self.world.element_shapes) * explorer, "climb_element",
              self._climb_element),
             (3 * (e.energy > 0.5) * (0.3 + e.curiosity) * self._cursor_above_and_still() * daring, "reach_cursor",
              self._build_up_to_cursor),
@@ -198,6 +200,16 @@ class Brain:
             if r <= 0:
                 self._start(name, make())
                 return
+
+    def _go_home(self) -> Task:
+        """Back down to the taskbar below (dropping/jumping; never builds for this)."""
+        fx = self.fig.body.position.x
+        floors = [s for s in self.world.surfaces() if s.kind == "floor"]
+        home = min(floors, key=lambda s: 0 if s.world()[0] <= fx <= s.world()[1] else 1, default=None)
+        if home is None:
+            return False
+        lo, hi, _ = usable_span(home, self.cfg) or (fx, fx, 0)
+        return (yield from self._goto(home.key, min(max(fx, lo), hi) - home.body.position.x, build=False))
 
     def _travel_somewhere(self) -> Task:
         cur = self._current_key()

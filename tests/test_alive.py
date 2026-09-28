@@ -165,3 +165,48 @@ def test_builds_up_to_a_pointer_hovering_in_the_air_and_grabs_it():
     sim(world, fig, 5, cursor=lambda t: pointer, brain=brain)  # (it lets go by itself after 6-20 s)
     assert fig.riding
     assert len(world.blocks) >= 2
+
+
+def test_ledges_update_in_place_and_it_drops_when_its_ledge_vanishes():
+    world, fig = make()
+    a, b = Rect(700, 800, 1000, 801), Rect(1200, 700, 1500, 701)
+    world.set_element_platforms(7, [a, b], ["Edit 'Search'", "Button 'Go'"])
+    fig.body.position = (850, 700)
+    sim(world, fig, 1.0)
+    key = world.surface_for_shape(fig.ground_shape)
+    assert key[0] == "elem"
+    # a refresh where its ledge is unchanged: nothing moves, same ledge id (no hiccup underfoot)
+    assert world.set_element_platforms(7, [a, b], ["Edit 'Search'", "Button 'Go'"]) is False
+    assert world.set_element_platforms(7, [a], ["Edit 'Search'"]) is True  # only the other one went
+    sim(world, fig, 0.3)
+    assert world.surface_for_shape(fig.ground_shape) == key
+    # the page scrolled: its ledge is gone, so it drops to the taskbar
+    world.set_element_platforms(7, [Rect(700, 500, 1000, 501)], ["Edit 'Search'"])
+    sim(world, fig, 1.5)
+    assert world.surface_for_shape(fig.ground_shape)[0] == "floor"
+
+
+def test_ledges_skip_invisible_containers_and_covered_parts():
+    from stickfigure.world.elements import visible_ledges
+
+    win = Rect(0, 0, 1920, 1040)
+    els = [El("Pane", Rect(100, 300, 900, 600)), El("Group", Rect(100, 400, 900, 700)),  # invisible boxes
+           El("Edit", Rect(100, 500, 900, 530))]
+    picked = pick_element_platforms(els, win)
+    assert [e.role for e in picked] == ["Edit"]
+    chat = Rect(600, 450, 1000, 900)  # our chat window sits over the right part of the text box
+    ledges = visible_ledges(picked, [chat])
+    assert [(r.left, r.right) for r, _ in ledges] == [(100, 600)]
+    assert visible_ledges(picked, [Rect(0, 0, 1920, 1040)]) == []  # fully covered: no ledge at all
+
+
+def test_heads_home_to_the_ground():
+    world, fig = make(Rect(800, 700, 1400, 1040))
+    brain = Brain(fig, world, BlockManager(world))
+    brain.enabled = False
+    fig.body.position = (1000, 600)
+    sim(world, fig, 1.0, brain=brain)
+    assert world.surface_for_shape(fig.ground_shape)[0] == "win"
+    brain._start("go_home", brain._go_home())
+    sim(world, fig, 8, brain=brain)
+    assert world.surface_for_shape(fig.ground_shape)[0] == "floor"

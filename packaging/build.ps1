@@ -2,10 +2,16 @@
 #   dist\TheThirdComing\TheThirdComing.exe   (the app, runs without Python)
 #   dist\TheThirdComing-Setup.exe            (the installer to share; needs Inno Setup 6)
 #
-#   powershell -ExecutionPolicy Bypass -File packaging\build.ps1
+#   powershell -ExecutionPolicy Bypass -File packaging\build.ps1 [-Version 1.1.3]
+#
+# You normally don't need to run this: GitHub builds and publishes the installer on every push to main
+# (.github/workflows/release.yml). Without -Version, a local build is numbered <packaging\VERSION>.0.
+param([string]$Version = "")
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
+if (-not $Version) { $Version = (Get-Content packaging\VERSION -Raw).Trim() + ".0" }
+Write-Host "Building version $Version"
 
 & .\.venv\Scripts\python -m pytest -q
 if ($LASTEXITCODE -ne 0) { throw "tests failed; not building" }
@@ -26,6 +32,6 @@ if (-not $iscc) {
     Write-Warning "Inno Setup 6 not found, so no installer was made. Install it with:  winget install JRSoftware.InnoSetup"
     exit 0
 }
-& $iscc packaging\installer.iss
+& $iscc "/DAppVersion=$Version" packaging\installer.iss
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
-Write-Host "Built installer: $root\dist\TheThirdComing-Setup.exe"
+Write-Host "Built installer $($Version): $root\dist\TheThirdComing-Setup.exe"

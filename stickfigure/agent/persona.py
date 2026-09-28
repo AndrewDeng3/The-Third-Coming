@@ -375,7 +375,9 @@ def mind_messages(name: str, emotion: Emotion, situation: Situation, context: di
         {"role": "system", "content": (
             f"You are the inner mind of {name}, a lively, mischievous stick figure living on the user's desktop. "
             f"{SHORT_LORE} Every so often you decide what to do next. "
-            "Be curious and varied: don't repeat what you just did, mix physical play with exploring.\n"
+            "Be curious and varied: don't repeat what you just did, mix physical play with exploring. "
+            "Your home is the ground (the taskbar): you mostly hang out down there and only climb up with a "
+            "reason, then come back down.\n"
             "Actions: go_to (travel to one of the numbered places below: set target to its number; it jumps, "
             "or builds a block staircase if it's too high), climb_element (climb onto some text box/button), "
             "reach_cursor (build a tower up to the mouse pointer and grab it), wander (explore somewhere random), "

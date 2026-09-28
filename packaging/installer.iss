@@ -7,7 +7,10 @@
 
 #define AppName "The Third Coming"
 #define AppExe "TheThirdComing.exe"
-#define AppVersion "1.1.0"
+#ifndef AppVersion
+  ; build.ps1 passes the real version (/DAppVersion=1.1.7); this is only the fallback.
+  #define AppVersion "1.1.0"
+#endif
 
 [Setup]
 AppId={{6E7C3B2A-3D1F-4C5B-9E2A-7A1B3C4D5E6F}

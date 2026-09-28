@@ -69,9 +69,9 @@ class World:
         self.space.on_collision(CT_FIGURE, CT_PLATFORM, begin=self._one_way_begin, pre_solve=self._one_way_pre)
         # Platforms on top of visible UI elements (text boxes, buttons...) of the window in front.
         self.element_owner = 0
-        self.element_shapes: list[pymunk.Shape] = []
-        self._element_rects: list[tuple[int, int, int]] = []
-        self.element_labels: list[str] = []  # "Edit 'Search'" etc., for the mind to pick destinations
+        self._element_by_sig: dict[tuple, pymunk.Shape] = {}  # (body id, x0, x1, top) -> ledge
+        self._element_ids = itertools.count(1)
+        self.element_labels: dict[int, str] = {}  # id -> "Edit 'Search'" etc., for the mind to pick destinations
         self.platforms: dict[int, WindowPlatform] = {}
         self.blocks: dict[int, Block] = {}
         self._block_ids = itertools.count(1)
@@ -106,40 +106,64 @@ class World:
     # -- UI element platforms ---------------------------------------------------------------
 
     def set_element_platforms(self, owner: int, rects: list, labels: list[str] | None = None) -> bool:
-        """Replace the element platforms with the tops of `rects` (screen Rects of the owner window's
-        elements). They hang off the owner's window platform, so they move with the window. Returns True
-        if anything changed."""
+        """Make the element platforms match `rects` (screen Rects whose TOP edges are ledges, already clipped
+        to what's visible). Updated in place: unchanged ledges stay (so standing on one isn't disturbed),
+        vanished or moved ones are removed (whoever stood there drops), new ones are added. They hang off the
+        owner's window platform when it has one, so they ride along when the window moves. Returns True if
+        anything changed."""
         plat = self.platforms.get(owner)
         base = plat.body if plat is not None else self.space.static_body
         ox, oy = base.position if plat is not None else (0.0, 0.0)
-        key = [(round(r.left - ox), round(r.right - ox), round(r.top - oy)) for r in rects]
-        if owner == self.element_owner and key == self._element_rects and (
-                not self.element_shapes or self.element_shapes[0].body is base):
-            return False
-        self.clear_elements()
+        labels = list(labels or [])
+        wanted: dict[tuple, str] = {}
+        for i, rc in enumerate(rects):
+            sig = (id(base), round(rc.left - ox), round(rc.right - ox), round(rc.top - oy))
+            wanted.setdefault(sig, labels[i] if i < len(labels) else "an element")
+        if owner != self.element_owner:
+            self.clear_elements()
+        changed = False
+        for sig in [s for s in self._element_by_sig if s not in wanted]:
+            seg = self._element_by_sig.pop(sig)
+            self._forget([seg])
+            self.space.remove(seg)
+            self.element_labels.pop(self.shape_keys.get(seg, ("elem", -1))[1], None)
+            changed = True
         r = self.cfg.platform_thickness
-        for i, (x0, x1, top) in enumerate(key):
+        added = []
+        for sig, label in wanted.items():
+            if sig in self._element_by_sig:
+                self.element_labels[self.shape_keys[self._element_by_sig[sig]][1]] = label
+                continue
+            _, x0, x1, top = sig
             seg = pymunk.Segment(base, (x0, top), (x1, top), r)
             seg.friction = 1.0
             seg.collision_type = CT_PLATFORM
             seg.filter = pymunk.ShapeFilter(categories=CAT_WORLD)
-            self.shape_keys[seg] = ("elem", i)
-            self.element_shapes.append(seg)
-        if self.element_shapes:
-            self.space.add(*self.element_shapes)
-        self.element_owner, self._element_rects = owner, key
-        self.element_labels = list(labels or [])[: len(key)]
-        self.version += 1
-        return True
+            eid = next(self._element_ids)
+            self.shape_keys[seg] = ("elem", eid)
+            self.element_labels[eid] = label
+            self._element_by_sig[sig] = seg
+            added.append(seg)
+        if added:
+            self.space.add(*added)
+            changed = True
+        self.element_owner = owner
+        if changed:
+            self.version += 1
+        return changed
+
+    @property
+    def element_shapes(self) -> list[pymunk.Shape]:
+        return list(self._element_by_sig.values())
 
     def clear_elements(self) -> None:
-        if self.element_shapes:
-            self._forget(self.element_shapes)
-            self.space.remove(*self.element_shapes)
+        segs = list(self._element_by_sig.values())
+        if segs:
+            self._forget(segs)
+            self.space.remove(*segs)
             self.version += 1
-        self.element_shapes = []
-        self._element_rects = []
-        self.element_labels = []
+        self._element_by_sig = {}
+        self.element_labels = {}
         self.element_owner = 0
 
     def _one_way_pre(self, arbiter: pymunk.Arbiter, _space, _data) -> None:
@@ -299,8 +323,8 @@ class World:
         for b in self.blocks.values():
             if b.walkable:
                 out.append(SurfaceSeg(("block", b.id), b.body, -b.width / 2, b.width / 2, 0.0, "block"))
-        for i, seg in enumerate(self.element_shapes):
-            out.append(SurfaceSeg(("elem", i), seg.body, seg.a.x, seg.b.x, seg.a.y - r, "element"))
+        for seg in self._element_by_sig.values():
+            out.append(SurfaceSeg(self.shape_keys[seg], seg.body, seg.a.x, seg.b.x, seg.a.y - r, "element"))
         return out
 
     def surface_for_shape(self, shape: pymunk.Shape | None) -> tuple | None:

@@ -57,7 +57,7 @@ from stickfigure.win.hotkeys import VK_SPACE, Hotkeys
 from stickfigure.win import win32
 from stickfigure.win.tracker import WindowTracker
 from stickfigure.world.blocks import BlockManager
-from stickfigure.world.elements import pick_element_platforms
+from stickfigure.world.elements import pick_element_platforms, visible_ledges
 from stickfigure.world.physics import World
 
 log = logging.getLogger("stickfigure")
@@ -391,8 +391,7 @@ class StickFigureApp:
                 t = titles.get(s.key[1], "") or "a window"
                 label = f"the top edge of the '{t[:40]}' window"
             elif s.kind == "element":
-                i = s.key[1]
-                name = self.world.element_labels[i] if i < len(self.world.element_labels) else "an element"
+                name = self.world.element_labels.get(s.key[1], "an element")
                 label = f"on top of {name} (in the window in front)"
             else:
                 label = "one of your blocks"
@@ -556,13 +555,14 @@ class StickFigureApp:
         if self._scan_skip > 0:  # the last read was slow (a huge page): give the app a breather
             self._scan_skip -= 1
             return
-        fg = int(win32.user32.GetForegroundWindow() or 0)
+        fg = front = int(win32.user32.GetForegroundWindow() or 0)
+        owner = self.world.element_owner
+        if fg and win32.window_pid(fg) == os.getpid() and owner and win32.user32.IsWindow(owner):
+            fg = owner  # typing in our chat: the app behind it (and its ledges) is still there
         if (not fg or win32.window_pid(fg) == os.getpid() or self._in_lounge or self._hidden_for_fullscreen
                 or self.actions.busy):
-            # Keep the current ones if the figure is standing on one; otherwise drop them.
-            key = self.world.surface_for_shape(self.fig.ground_shape)
-            if self.world.element_shapes and not (key and key[0] == "elem") and fg != self.world.element_owner:
-                self.world.clear_elements()
+            if self.world.element_shapes and fg != self.world.element_owner:
+                self.world.clear_elements()  # another window came to the front: those ledges are gone
             return
         rect = win32.frame_bounds(fg)
         info = WindowInfo(fg, win32.process_name(fg), win32.class_name(fg), win32.window_title(fg))
@@ -573,20 +573,17 @@ class StickFigureApp:
             t0 = time.perf_counter()
             elements = await asyncio.wait_for(asyncio.wrap_future(self.element_reader.elements(fg, rect)), 4)
             took = time.perf_counter() - t0
-            self._scan_skip = 0 if took < 0.4 else min(15, int(took * 4))
-            if win32.user32.GetForegroundWindow() != fg:
-                return
-            picked = pick_element_platforms(elements, rect)
-            rects = [e.rect for e in picked]
-            labels = [f"{e.role} '{e.name[:30]}'" if e.name else e.role for e in picked]
-            key = self.world.surface_for_shape(self.fig.ground_shape)
-            if key and key[0] == "elem" and self.fig.grounded and fg == self.world.element_owner:
-                # Standing on one: only refresh if the one underfoot survives (else it'd drop mid-stride).
-                fx, fy = self.fig.feet
-                if not any(r.left <= fx <= r.right and abs(r.top - fy) < 8 for r in rects):
-                    return
-            if self.world.set_element_platforms(fg, rects, labels):
-                log.debug("element platforms: %d in %s", len(rects), info.process)
+            self._scan_skip = 0 if took < 0.3 else min(20, int(took * 5))  # heavy page: scan less often
+            if int(win32.user32.GetForegroundWindow() or 0) != front:
+                return  # the user switched windows while we were reading: next scan
+            # Windows in front of this one (z-order: top-most first) hide parts of its elements.
+            order = self.tracker.snapshot.windows
+            idx = next((i for i, w in enumerate(order) if w.hwnd == fg), 0)
+            occluders = [w.rect for w in order[:idx]]
+            ledges = visible_ledges(pick_element_platforms(elements, rect), occluders)
+            # Always match what's really there: if the ledge underfoot changed or vanished, it drops.
+            if self.world.set_element_platforms(fg, [r for r, _ in ledges], [lbl for _, lbl in ledges]):
+                log.debug("element ledges: %d in %s", len(ledges), info.process)
         except (asyncio.TimeoutError, OSError, Exception) as e:  # noqa: BLE001 - optional nicety
             log.debug("element scan failed: %s", e)
         finally:
@@ -828,7 +825,7 @@ class StickFigureApp:
         # Stand on text boxes, buttons, images... of the window in front (re-read every couple of seconds).
         self._element_timer = QTimer()
         self._element_timer.timeout.connect(lambda: asyncio.ensure_future(self._scan_elements()))
-        self._element_timer.start(2000)
+        self._element_timer.start(750)
         self._scanning = False
         self._scan_skip = 0
         self._mood_timer.start(2000)
