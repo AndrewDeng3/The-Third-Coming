@@ -33,3 +33,13 @@
  Safeguards are included, but you should disable any settings that may be disruptive or that you are uncomfortable with.
 
  Windows may display a security warning when you run the installer. Review the warning carefully before proceeding.
+
+ ## I'm Back :P
+
+ @MilesWK @techwithanirudh @PianoMan0 @bigminiboss @EnZon3
+
+ It's been two years but hi again lol :D
+
+ Yeah just wanted to say hi sorry if i bothered you -_-
+ 
+ I've mostly switched over to vibecoding sadly but at least im back :/
