@@ -18,9 +18,9 @@
 
  ## Controls
 
- Press **Escape** to cancel any action involving cursor movement, right click to be able to chat, modify settings, and quit the program.
+ Press **Escape** to cancel any action involving cursor movement, right click The Third Coming to be able to chat, modify settings, and quit the program.
 
- A **GPU is required**, a bulkier computer is advised.
+ A **GPU is required**, and a bulkier computer is advised.
 
  ## Recommendations
 
