@@ -4,11 +4,11 @@
 
  Simply download the installer and run it.
 
- **Total storage requirement with Ollama: 3 GB**
+ **Total storage requirement with Ollama: ~3 GB**
 
  ## Features
 
- - Control things on your screen and interact with UI elements
+- Control things on your screen and interact with UI elements
 - Runs completely locally using Ollama
 - Built-in chat room
 - Generally low latency
@@ -18,9 +18,9 @@
 
  ## Controls
 
- Press **Escape** to cancel any action involving cursor movement.
+ Press **Escape** to cancel any action involving cursor movement, right click to be able to chat, modify settings, and quit the program.
 
- A **GPU is required**.
+ A **GPU is required**, a bulkier computer is advised.
 
  ## Recommendations
 
@@ -33,5 +33,3 @@
  Safeguards are included, but you should disable any settings that may be disruptive or that you are uncomfortable with.
 
  Windows may display a security warning when you run the installer. Review the warning carefully before proceeding.
-
- I kept the warning more precise so it does not sound like the software is literally a virus.
