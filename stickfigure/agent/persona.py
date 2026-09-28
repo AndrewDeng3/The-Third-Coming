@@ -32,6 +32,7 @@ def system_prompt(
     observation: str | None = None,
     user_name: str = "",
     episodes: list[Fact] | None = None,
+    self_text: str = "",
 ) -> str:
     when = time.strftime("%A %I:%M %p", time.localtime(now if now is not None else time.time())).replace(" 0", " ")
     who = f"\nThe user's name is {user_name}. Use it now and then, naturally (not in every message)." if user_name else ""
@@ -56,7 +57,7 @@ You run along the tops of their windows, leap between them, build block staircas
 grab onto their mouse cursor for a ride, and have a cozy lounge (inside the chat window) you retreat to.
 Personality: playful, curious, mischievous, warm, and expressive. You have real moods and they color how you talk.{who}
 
-{LORE}
+{LORE}{chr(10) * 2 + self_text if self_text else ""}
 
 Style rules:
 - Casual chat: 1-3 short sentences. Your words also appear in a small speech bubble.
@@ -351,16 +352,18 @@ def clean_reply(text: str) -> str:
 
 # -- the always-on mind: what to do next -----------------------------------------------------------
 
-MIND_ACTIONS = ("nothing", "wander", "follow_cursor", "ride_cursor", "chase_cursor", "flip", "dance", "climb", "build",
-                "sit", "nap", "look_up_something", "peek_tabs", "look_at_screen", "chat", "lounge")
+MIND_ACTIONS = ("nothing", "go_to", "wander", "climb_element", "reach_cursor", "follow_cursor", "ride_cursor",
+                "chase_cursor", "flip", "dance", "climb", "build", "sit", "nap", "look_up_something", "peek_tabs",
+                "look_at_screen", "chat", "lounge")
 MIND_SCHEMA = {
     "type": "object",
     "properties": {
         "thought": {"type": "string"},
         "action": {"type": "string", "enum": list(MIND_ACTIONS)},
+        "target": {"type": "integer"},
         "say": {"type": "string"},
     },
-    "required": ["thought", "action", "say"],
+    "required": ["thought", "action", "target", "say"],
 }
 
 
@@ -373,19 +376,25 @@ def mind_messages(name: str, emotion: Emotion, situation: Situation, context: di
             f"You are the inner mind of {name}, a lively, mischievous stick figure living on the user's desktop. "
             f"{SHORT_LORE} Every so often you decide what to do next. "
             "Be curious and varied: don't repeat what you just did, mix physical play with exploring.\n"
-            "Actions: wander (explore the windows), follow_cursor, ride_cursor (hang from the pointer), "
+            "Actions: go_to (travel to one of the numbered places below: set target to its number; it jumps, "
+            "or builds a block staircase if it's too high), climb_element (climb onto some text box/button), "
+            "reach_cursor (build a tower up to the mouse pointer and grab it), wander (explore somewhere random), "
+            "follow_cursor, ride_cursor (hang from the pointer), "
             "chase_cursor, flip (backflip), dance, climb (to the highest window), build (a block structure), "
             "sit, nap (only if tired), look_up_something (google something fun in a new tab - only when the "
             "user is away), peek_tabs (flip through their browser tabs - only when away), look_at_screen "
             "(glance at what they're doing and ask about it - when they're active), chat (say something to "
             "them), lounge (relax in your lounge in the chat window), nothing.\n"
-            "thought = your private reasoning in one short sentence. say = an optional short line spoken out "
-            "loud (under 12 words, often empty).")},
+            "thought = your private reasoning in one short sentence. Your action MUST carry out your thought "
+            "(thinking about the search box -> go_to that search box). target = a place number for go_to, "
+            "else -1. say = an optional short line spoken out loud (under 12 words, often empty).")},
         {"role": "user", "content": (
             f"Time: {time.strftime('%A %I:%M %p')}\nMood: {emotion.describe()}\n"
             f"You are {situation.activity} on {situation.surface}.\n"
+            f"Your personality so far: {context.get('personality', 'still forming')}\n"
             f"The user: {context.get('user', 'unknown')}\n"
-            f"Things you know about them: {known}\nWhat you did recently: {did}")},
+            f"Things you know about them: {known}\nWhat you did recently: {did}\n"
+            f"Places you can go:\n{context.get('places') or '(none)'}")},
     ]
 
 

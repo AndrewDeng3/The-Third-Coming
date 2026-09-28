@@ -119,3 +119,13 @@ def test_throw_velocity_is_capped():
     fig._cursor_samples.extend([(t - 0.03, 0, 500), (t, 900, 500)])
     fig.release()
     assert abs(fig.body.velocity.length - fig.cfg.max_throw_speed) < 1
+
+
+def test_its_own_big_drop_lands_on_its_feet():
+    """Jumping/dropping down from a high window is its own choice: no knockdown, no grumpiness."""
+    world, fig = make()
+    fig.body.position = (1000, 100)  # ~900 px above the taskbar, falling on its own
+    fig.grounded = False
+    step(world, fig, 2.0)
+    assert fig.grounded and fig.knocked == 0
+    assert not any(e[0] == "knocked" for e in fig.events)

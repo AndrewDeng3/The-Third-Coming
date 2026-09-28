@@ -71,6 +71,7 @@ class World:
         self.element_owner = 0
         self.element_shapes: list[pymunk.Shape] = []
         self._element_rects: list[tuple[int, int, int]] = []
+        self.element_labels: list[str] = []  # "Edit 'Search'" etc., for the mind to pick destinations
         self.platforms: dict[int, WindowPlatform] = {}
         self.blocks: dict[int, Block] = {}
         self._block_ids = itertools.count(1)
@@ -104,7 +105,7 @@ class World:
 
     # -- UI element platforms ---------------------------------------------------------------
 
-    def set_element_platforms(self, owner: int, rects: list, ) -> bool:
+    def set_element_platforms(self, owner: int, rects: list, labels: list[str] | None = None) -> bool:
         """Replace the element platforms with the tops of `rects` (screen Rects of the owner window's
         elements). They hang off the owner's window platform, so they move with the window. Returns True
         if anything changed."""
@@ -127,6 +128,7 @@ class World:
         if self.element_shapes:
             self.space.add(*self.element_shapes)
         self.element_owner, self._element_rects = owner, key
+        self.element_labels = list(labels or [])[: len(key)]
         self.version += 1
         return True
 
@@ -137,6 +139,7 @@ class World:
             self.version += 1
         self.element_shapes = []
         self._element_rects = []
+        self.element_labels = []
         self.element_owner = 0
 
     def _one_way_pre(self, arbiter: pymunk.Arbiter, _space, _data) -> None:

@@ -142,7 +142,7 @@ class Animator:
             Anim.WALK: lambda: self._gait(run=False),
             Anim.RUN: lambda: self._gait(run=True),
             Anim.PREP: lambda: self._crouch(min(1.0, self.state_time / self.cfg.jump_prep_time)),
-            Anim.LAND: lambda: self._crouch(min(1.0, f.land_timer / 0.16)),
+            Anim.LAND: lambda: self._crouch(min(1.0, f.land_timer / 0.16)),  # deeper for longer drops
             Anim.AIR: self._air,
             Anim.FALL: self._flail,
             Anim.TUMBLE: self._flail,

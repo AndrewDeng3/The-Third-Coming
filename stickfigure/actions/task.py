@@ -75,6 +75,22 @@ def clickable_point(el_rect: Rect, window: Rect, target_pid: int, pid_at=None) -
     return None
 
 
+def same_target(found: UIElement, wanted: UIElement) -> bool:
+    """Is what's under the pointer the element we meant (itself, a part of it, or the same thing)?"""
+    a, b = found.rect, wanted.rect
+    inside = a.left >= b.left - 3 and a.top >= b.top - 3 and a.right <= b.right + 3 and a.bottom <= b.bottom + 3
+    if inside:  # a child of the intended element (the text inside a button, a cell of a list...)
+        return True
+    fn, wn = found.name.strip().lower(), wanted.name.strip().lower()
+    if fn and wn and (fn in wn or wn in fn):
+        return True
+    ix = max(0.0, min(a.right, b.right) - max(a.left, b.left))
+    iy = max(0.0, min(a.bottom, b.bottom) - max(a.top, b.top))
+    inter = ix * iy
+    union = a.width * a.height + b.width * b.height - inter
+    return union > 0 and inter / union > 0.6  # (nearly) the same box, reported differently
+
+
 def _contains_words(haystack: str, needle: str, threshold: float = 0.8) -> bool:
     """Is `needle` (roughly) in `haystack`? Tolerates OCR noise: most of its words must appear."""
     norm = lambda s: re.findall(r"[a-z0-9']+", s.lower())  # noqa: E731
@@ -259,6 +275,21 @@ class ActionTask:
                 hit = step.element
                 if step.point is not None and step.kind in ("click", "double_click"):
                     now = await asyncio.wrap_future(self.perception.uia.at_point(*step.point))
+                    if step.element is not None and now is not None and not same_target(now, step.element):
+                        # Something else is under that spot (an overlay, a neighbor, a popup): look for a
+                        # point on the element that really hits it, or don't click at all.
+                        better = await self._aim_at(step.element)
+                        if better is None:
+                            failures += 1
+                            self.history.append(f"{step.describe()} -> NOT CLICKED (at that spot is "
+                                                f"{now.describe()}, not {step.element.describe()}; pick "
+                                                "another element or scroll it into view)")
+                            self._log("wrong_target", step=step.describe(), found=now.describe())
+                            if failures >= self.cfg.max_failures:
+                                return self._end("failed", f"I couldn't reach {step.element.describe()}: "
+                                                           f"{now.describe()} is in the way.")
+                            continue
+                        step.point, now = better
                     hit = now or step.element
                 focused = await asyncio.wrap_future(self.perception.uia.focused())
                 decision = decide(Proposed(step.kind, hit, step.text, step.keys, step.amount), window, focused,
@@ -431,6 +462,23 @@ class ActionTask:
             return f"failed: {problem}"
         ok = await asyncio.to_thread(win32.bring_target_forward, target.hwnd, os.getpid())
         return f"done: now working in {target.label()}" if ok else "done (it may not be in front yet)"
+
+    async def _aim_at(self, el: UIElement) -> tuple[tuple[float, float], UIElement] | None:
+        """A point on `el`'s visible part where the element under the pointer really is `el` (or its child)."""
+        bounds = win32.frame_bounds(self.target.hwnd) or self.target.rect
+        r = el.rect
+        l, t = max(r.left, bounds.left), max(r.top, bounds.top)
+        rr, b = min(r.right, bounds.right), min(r.bottom, bounds.bottom)
+        if rr - l < 2 or b - t < 2:
+            return None
+        cx, cy = (l + rr) / 2, (t + b) / 2
+        pts = [(l + (rr - l) * fx, t + (b - t) * fy) for fx in (0.25, 0.5, 0.75) for fy in (0.3, 0.5, 0.7)]
+        pts.sort(key=lambda p: abs(p[0] - cx) + abs(p[1] - cy))
+        for pt in pts[:7]:
+            got = await asyncio.wrap_future(self.perception.uia.at_point(*pt))
+            if got is not None and same_target(got, el):
+                return pt, got
+        return None
 
     def _goal_mentions(self, target: Target) -> bool:
         """Does the user's request actually involve this window (its app or a word of its title)?"""

@@ -48,7 +48,7 @@ def test_element_platform_picking():
            El("Edit", Rect(200, 500, 600, 530), is_password=True),
            El("Image", Rect(800, 400, 1100, 700))]
     got = pick_element_platforms(els, win)
-    assert [(r.left, r.top) for r in got] == [(200, 300), (800, 400)]
+    assert [(e.rect.left, e.rect.top) for e in got] == [(200, 300), (800, 400)]
 
 
 def test_figure_stands_on_a_text_box_and_it_moves_with_the_window():
@@ -107,7 +107,7 @@ def test_mind_picks_an_action(tmp_path):
 
     agent = Agent(Mind(), Memory(tmp_path / "m.db", fake_embed), Emotion())
     r = asyncio.run(agent.think(SIT, {"user": "active"}, ["dance"]))
-    assert r == {"thought": "The cursor looks fun.", "action": "ride_cursor", "say": "Hop on!"}
+    assert r == {"thought": "The cursor looks fun.", "action": "ride_cursor", "target": -1, "say": "Hop on!"}
 
 
 def test_learns_a_lesson_and_recalls_it_for_a_similar_task(tmp_path):
@@ -126,3 +126,42 @@ def test_learns_a_lesson_and_recalls_it_for_a_similar_task(tmp_path):
     assert lessons and "New Tab" in lessons[0]
     # lessons don't leak into the conversation recall
     assert asyncio.run(agent._episodes_for("new tab chrome")) == []
+
+
+def test_climbs_onto_an_element_of_a_maximized_window():
+    """Maximized windows have no top-edge platform, so their text boxes hang off the static body."""
+    world, fig = make()
+    brain = Brain(fig, world, BlockManager(world))
+    brain.enabled = False
+    fig.body.position = (600, 900)
+    sim(world, fig, 1.0, brain=brain)
+    world.set_element_platforms(99, [Rect(900, 820, 1300, 850)], ["Edit 'Search'"])  # ~210 px up: a jump
+    brain.command("climb_element")
+    sim(world, fig, 10, brain=brain)
+    assert world.surface_for_shape(fig.ground_shape)[0] == "elem"
+
+
+def test_builds_stairs_to_a_high_element():
+    world, fig = make()
+    brain = Brain(fig, world, BlockManager(world))
+    brain.enabled = False
+    fig.body.position = (600, 900)
+    sim(world, fig, 1.0, brain=brain)
+    world.set_element_platforms(99, [Rect(900, 560, 1300, 590)], ["Edit 'Search'"])  # ~480 px up: too high
+    brain.command("climb_element")
+    sim(world, fig, 25, brain=brain)
+    assert world.surface_for_shape(fig.ground_shape)[0] == "elem"
+    assert len(world.blocks) >= 1  # it had to build to get there
+
+
+def test_builds_up_to_a_pointer_hovering_in_the_air_and_grabs_it():
+    world, fig = make()
+    brain = Brain(fig, world, BlockManager(world))
+    brain.enabled = False
+    fig.body.position = (600, 900)
+    sim(world, fig, 1.0, brain=brain)
+    pointer = (800.0, 520.0)  # way above its reach, nothing under it but air
+    brain.command("reach_cursor")
+    sim(world, fig, 5, cursor=lambda t: pointer, brain=brain)  # (it lets go by itself after 6-20 s)
+    assert fig.riding
+    assert len(world.blocks) >= 2

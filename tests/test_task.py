@@ -332,3 +332,14 @@ def test_prepared_text_is_never_typed_twice_in_one_step(tmp_path):
     r = run(task)
     assert r.status == "done" and FakeUIA.doc == intro
     assert any("only ONCE" in s for s in r.steps)
+
+
+def test_same_target_rules():
+    from stickfigure.actions.task import same_target
+    from stickfigure.perception.uia import UIElement
+
+    btn = UIElement("Share", "Button", Rect(100, 100, 200, 140))
+    assert same_target(UIElement("Share", "Text", Rect(120, 110, 180, 130)), btn)  # its label inside it
+    assert same_target(UIElement("share", "Button", Rect(90, 95, 210, 145)), btn)  # same name, bigger box
+    assert not same_target(UIElement("Ad banner", "Image", Rect(0, 0, 800, 600)), btn)  # an overlay on top
+    assert not same_target(UIElement("Comment", "Button", Rect(210, 100, 300, 140)), btn)  # the neighbor

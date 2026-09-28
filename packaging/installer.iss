@@ -7,7 +7,7 @@
 
 #define AppName "The Third Coming"
 #define AppExe "TheThirdComing.exe"
-#define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 
 [Setup]
 AppId={{6E7C3B2A-3D1F-4C5B-9E2A-7A1B3C4D5E6F}

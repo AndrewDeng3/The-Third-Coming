@@ -309,6 +309,14 @@ def move_window(hwnd: int, x: int, y: int) -> None:
     user32.SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
 
 
+SWP_NOMOVE = 0x0002
+
+
+def bring_to_top(hwnd: int) -> None:
+    """Put a window at the very top of the always-on-top band, without moving, resizing, or focusing it."""
+    user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+
+
 def place_window(hwnd: int, x: int, y: int, w: int, h: int) -> None:
     user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE)
 
