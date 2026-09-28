@@ -25,7 +25,7 @@ from stickfigure.agent.agent import Agent
 from stickfigure.agent.emotion import Emotion
 from stickfigure.agent.memory import Memory
 from stickfigure.agent.persona import STOP_WORDS, YES_WORDS, Situation, where_on_screen
-from stickfigure.config import CONFIG, Config
+from stickfigure.config import CONFIG, Config, temp_scale
 from stickfigure.figure.animator import Anim, Animator
 from stickfigure.figure.brain import Brain
 from stickfigure.figure.controller import Figure
@@ -121,6 +121,7 @@ class Companion:
         agent.on_action = self._on_agent_action
         # The always-on mind: every half minute or so it decides what to do next (set up by the app).
         self.think_enabled = True
+        self.temperature = cfg.temperature  # 1..10: how often it does things on its own
         self._next_think = time.monotonic() + random.uniform(15, 30)
         self._thinking = False
         self._recent_choices: list[str] = []
@@ -165,7 +166,7 @@ class Companion:
             self.bubble_say(random.choice(["Zzz...", "zzz", "Zzz... mm... blocks..."]))
 
         if now > self._next_chatter:
-            self._next_chatter = now + random.uniform(*self.cfg.idle_chatter)
+            self._next_chatter = now + random.uniform(*self.cfg.idle_chatter) * temp_scale(self.temperature)
             if (
                 now - self.last_interaction > 60
                 and state not in (Anim.SLEEP, Anim.GRABBED)
@@ -183,7 +184,7 @@ class Companion:
             asyncio.ensure_future(self._reflect())
 
         if self.think_enabled and now >= self._next_think and not self._thinking:
-            self._next_think = now + random.uniform(*self.cfg.think_gap)
+            self._next_think = now + random.uniform(*self.cfg.think_gap) * temp_scale(self.temperature)
             if self._can_think(state):
                 asyncio.ensure_future(self._think())
 

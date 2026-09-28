@@ -373,6 +373,17 @@ class StickFigureApp:
             + (f"  ·  💭 {thought}" if thought else "")
         )
 
+    def _set_temperature(self, t: int) -> None:
+        """How often it does things on its own (applies right away; schedules shrink or stretch)."""
+        t = max(1, min(10, int(t)))
+        old = self.companion.temperature
+        self.companion.temperature = self.mischief.temperature = self.adventure.temperature = t
+        if t > old:  # hotter: don't wait out the old, longer gaps
+            now = time.monotonic()
+            for obj, attr in ((self.mischief, "_next_at"), (self.adventure, "_next_at"),
+                              (self.companion, "_next_think")):
+                setattr(obj, attr, min(getattr(obj, attr), now + (getattr(obj, attr) - now) * old / t))
+
     def _mind_lounge(self) -> bool:
         if not self.chat.isVisible() or self._in_lounge:
             return False
@@ -730,6 +741,7 @@ class StickFigureApp:
             "notice_activity": self.companion.notice_enabled,
             "adventures": self.adventure.enabled,
             "awareness": self.awareness.enabled,
+            "temperature": self.companion.temperature,
             "chat_model": self.cfg.chat_model,
         }
 
@@ -784,6 +796,7 @@ class StickFigureApp:
         self.companion.notice_enabled = values["notice_activity"]
         self.act_adventure.setChecked(values["adventures"])
         self.awareness.enabled = values["awareness"]
+        self._set_temperature(values["temperature"])
         if needs_restart:
             self.bubble.say("Some of those changes kick in after a restart!", hold=4)
 

@@ -153,3 +153,27 @@ def test_adventures_can_never_click_type_or_press_other_keys():
 
 def test_search_url_is_escaped():
     assert search_url("why do cats knead & purr") == "https://www.google.com/search?q=why+do+cats+knead+%26+purr"
+
+
+def test_temperature_scales_how_often_and_how_many_clicks():
+    from stickfigure.config import temp_clicks, temp_scale
+
+    assert temp_scale(3) == 1.0 and temp_scale(10) < 0.35 and temp_scale(1) == 3.0
+    assert temp_scale(0) == 3.0 and temp_scale(99) == temp_scale(10)  # clamped to 1..10
+    assert [temp_clicks(t) for t in (1, 2, 3, 5, 6, 9, 10)] == [0, 0, 1, 1, 2, 3, 3]
+
+
+def test_adventure_clicks_only_plain_left_clicks_when_allowed_and_never_ads():
+    from stickfigure.actions.adventure import SKIP_LINK
+
+    with pytest.raises(AssertionError):
+        _check_steps([Click()])  # not unless the result-visiting code asks for it
+    _check_steps([Click(), Keys("alt+left")], allow_click=True)
+    with pytest.raises(AssertionError):
+        _check_steps([Click(button="right")], allow_click=True)
+    with pytest.raises(AssertionError):
+        _check_steps([Click(count=2)], allow_click=True)
+    for bad in ("Sponsored · Buy cheap flights", "Sign in to your account", "Download setup.exe now",
+                "Images for octopus"):
+        assert SKIP_LINK.search(bad), bad
+    assert not SKIP_LINK.search("How Octopuses Change Color - Smithsonian Magazine")

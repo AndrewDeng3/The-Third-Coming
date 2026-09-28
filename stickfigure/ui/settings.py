@@ -7,7 +7,7 @@ from typing import Callable
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QCheckBox, QComboBox, QDoubleSpinBox, QSpinBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QSlider, QVBoxLayout, QWidget,
 )
 
@@ -56,6 +56,9 @@ class SettingsPanel(QWidget):
         for key, label in STT_MODELS.items():
             self.stt.addItem(label, key)
         self.stt.setCurrentIndex(max(0, self.stt.findData(v["stt_model"])))
+        self.temperature = QSpinBox(minimum=1, maximum=10, value=int(v.get("temperature", 3)))
+        self.temperature.setToolTip("How often it does things on its own: pranks, web adventures, thinking. Higher also "
+                                    "means it clicks into more search results on its own adventures. 3 is the default.")
         self.mischief = QCheckBox("Harmless pranks when I'm idle")
         self.mischief.setToolTip("Cursor tugs, a little scrolling, hovering. Never clicks or types.")
         self.mischief.setChecked(v["mischief"])
@@ -92,6 +95,7 @@ class SettingsPanel(QWidget):
         form.addRow("Volume", self.volume)
         form.addRow("Listening", self.stt)
         form.addRow(self._section("Behavior"))
+        form.addRow("Temperature", self.temperature)
         form.addRow("", self.mischief)
         form.addRow("", self.awareness)
         form.addRow("", self.notice)
@@ -140,6 +144,7 @@ class SettingsPanel(QWidget):
             "mischief": self.mischief.isChecked(),
             "notice_activity": self.notice.isChecked(),
             "awareness": self.awareness.isChecked(),
+            "temperature": self.temperature.value(),
             "adventures": self.adventures.isChecked(),
             "supervised": self.supervised.isChecked(),
             "chat_model": self.chat_model.text().strip() or "llama3.2:3b",

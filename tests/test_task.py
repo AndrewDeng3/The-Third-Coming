@@ -178,7 +178,7 @@ def test_approve_all_skips_routine_asks_but_not_destructive(tmp_path):
     m = ScriptedModel([])
     task, _, ex, asked, _ = make_task(tmp_path, [
         {"action": "click", "element_id": m.id_of(BOLD)},
-        {"action": "click", "element_id": m.id_of(BOLD)},
+        {"action": "click", "element_id": m.id_of(BODY)},
         {"action": "click", "element_id": m.id_of(DELETE)},
         {"action": "done"},
     ], approvals=["approve_all", "deny"])
@@ -283,7 +283,7 @@ def test_refuses_to_type_the_same_text_twice_and_sees_the_document(tmp_path):
     assert FakeUIA.doc == text  # typed exactly once
     assert "(empty)" in seen[0]  # the model saw the document was empty...
     assert "This is a new message." in seen[1] and "verified" in seen[1]  # ...then saw its text land
-    assert any("already typed exactly this" in s for s in r.steps)
+    assert any("already typed" in s and "SKIPPED" in s for s in r.steps)
 
 
 def test_step_budget(tmp_path):
@@ -294,15 +294,15 @@ def test_step_budget(tmp_path):
     assert run(task).status == "limit"
 
 
-def test_stops_repeating_the_same_step_forever(tmp_path):
-    """The Google Docs failure: 'click the document' 19 times, never typing."""
+def test_a_repeated_step_is_skipped_not_run_twice(tmp_path):
+    """The Google Docs loop ('click the document' over and over): repeats are ignored and the task carries on."""
     m = ScriptedModel([])
-    task, _, ex, _, _ = make_task(tmp_path, [{"action": "click", "element_id": m.id_of(BODY)}] * 30,
-                                  supervised=False)
+    task, _, ex, _, _ = make_task(tmp_path, [{"action": "click", "element_id": m.id_of(BODY)}] * 5
+                                  + [{"action": "done"}], supervised=False)
     r = run(task)
-    assert r.status == "failed" and "repeating" in r.message
-    assert len(ex.ran) == 2  # ran twice, then refused to keep going in circles
-    assert any("already ran 2 times" in s for s in r.steps)
+    assert r.status == "done"
+    assert len(ex.ran) == 1  # clicked once; the four repeats were skipped
+    assert sum("SKIPPED" in s for s in r.steps) == 4
 
 
 def test_types_the_prepared_text_not_its_own_version(tmp_path):

@@ -93,6 +93,9 @@ class Config:
     lounge_after: float = 60.0  # quiet seconds (chat open) before the chat turns into the lounge
     notice_activity: bool = True  # now and then, peek at what you're doing and ask about it
     awareness: bool = True  # keep track of apps / window titles / activity (in memory only, no screenshots)
+    # Temperature 1..10: how often it does things on its own (pranks, adventures, thinking) and how much it clicks
+    # around in its own web searches. 3 = the defaults above; 10 ~ 3x as often; 1 ~ 3x less.
+    temperature: int = 3
     peek_gap: tuple[float, float] = (420.0, 1080.0)  # random pause between peeks (7-18 min)
 
     # Voice (Phase 6)
@@ -116,8 +119,18 @@ class Config:
 # Settings the user can change in the Settings window (saved to <data_dir>/settings.json).
 USER_SETTINGS = (
     "user_name", "color", "voice_enabled", "tts_voice", "tts_speed", "tts_volume", "stt_model",
-    "mischief", "supervised", "chat_model", "notice_activity", "adventures", "awareness",
+    "mischief", "supervised", "chat_model", "notice_activity", "adventures", "awareness", "temperature",
 )
+
+
+def temp_scale(temperature: int) -> float:
+    """Multiplier for "time between spontaneous things": 1.0 at the default 3, ~0.3 at 10, 3.0 at 1."""
+    return 3.0 / max(1, min(10, int(temperature)))
+
+
+def temp_clicks(temperature: int) -> int:
+    """How many search results it clicks into on one web adventure."""
+    return (0, 0, 1, 1, 1, 2, 2, 2, 3, 3)[max(1, min(10, int(temperature))) - 1]
 
 
 def settings_path(cfg: Config | None = None) -> str:

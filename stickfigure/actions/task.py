@@ -37,6 +37,7 @@ from stickfigure.world.geometry import Rect
 
 log = logging.getLogger(__name__)
 _ids = itertools.count(1)
+NO_REPEAT = {"click", "double_click", "type_text", "open_url", "switch_window"}  # skipped if proposed twice in a row
 BROWSERS = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe", "arc.exe"}
 # Windows whose main job is editing a document: Enter/newlines there just make new lines.
 DOC_WINDOW = re.compile(r"(- Google Docs|- Word$|- Notepad$|Notepad\+\+|- Replit|Visual Studio Code|- Obsidian|"
@@ -73,6 +74,11 @@ def clickable_point(el_rect: Rect, window: Rect, target_pid: int, pid_at=None) -
         if pid_at(*pt) == target_pid:
             return pt
     return None
+
+
+def screen_fingerprint(elements: list[UIElement]) -> int:
+    """A cheap hash of what's on screen (element roles, names, rough positions)."""
+    return hash(tuple(sorted((e.role, e.name, round(e.rect.left / 8), round(e.rect.top / 8)) for e in elements)))
 
 
 def same_target(found: UIElement, wanted: UIElement) -> bool:
@@ -133,9 +139,10 @@ class ActionTask:
         self.task_approved = not cfg.supervised
         self._stopped = ""
         self._typed: set[str] = set()
-        self._last_sig = ""  # the last step that ran successfully, and how many times in a row
+        self._last_sig = ""
+        self._last_fp = 0  # the last step that ran successfully, and how many times in a row
         self._repeats = 0
-        self._stuck = 0  # texts typed successfully this task (no accidental repeats)
+  # texts typed successfully this task (no accidental repeats)
         self._snapshot: list[UIElement] = []
         self._rect: Rect | None = None
 
@@ -208,27 +215,23 @@ class ActionTask:
                         return self._end("failed", "I kept typing the wrong words instead of what I wrote, so I stopped.")
                     continue
 
-                if step.kind == "type_text" and step.text.strip() and step.text in self._typed:
-                    failures += 1
-                    self.history.append("(invalid: you already typed exactly this text in this task - check "
-                                        "'Current text' and don't type it again unless the goal asks for a repeat)")
-                    if failures >= self.cfg.max_failures:
-                        return self._end("failed", "I kept trying to type the same thing twice, so I stopped.")
-                    continue
-
-                # Stuck in a loop? (The same step already ran successfully twice in a row.)
+                # A repeat of what just ran (or text already typed) is simply skipped - never run twice,
+                # never counted as a failure - and the model is told to move on. Steps that legitimately repeat
+                # (scrolling, keys like Tab, waiting) aren't affected.
                 sig = step.describe()
-                if sig == self._last_sig and self._repeats >= 2 and step.kind not in ("wait", "done", "ask_user"):
-                    failures += 1
-                    self._stuck += 1
-                    self.history.append(
-                        f"(invalid: \"{sig}\" already ran {self._repeats} times in a row and "
-                        "succeeded - repeating it changes nothing. Do the NEXT step of the plan instead"
-                        + (" (the caret is in the text: use type_text now)" if step.kind == "click" and
-                           self._in_text_body(await asyncio.wrap_future(self.perception.uia.focused())) else "")
-                        + ".)")
-                    if self._stuck >= 3 or failures >= self.cfg.max_failures:
-                        return self._end("failed", "I got stuck repeating the same step, so I stopped.")
+                # (Only if nothing on screen changed since it ran: "Next" twice on a changing page is fine.)
+                repeat = (sig == self._last_sig and step.kind in NO_REPEAT
+                          and screen_fingerprint(self._snapshot) == self._last_fp)
+                typed_again = step.kind == "type_text" and step.text.strip() and step.text in self._typed
+                if repeat or typed_again:
+                    hint = ""
+                    if step.kind == "click" and self._in_text_body(
+                            await asyncio.wrap_future(self.perception.uia.focused())):
+                        hint = " The caret is already in the text: use type_text now."
+                    elif typed_again:
+                        hint = " That text is already typed (check 'Current text')."
+                    self.history.append(f"{sig} -> SKIPPED (already done just now; do the next step instead).{hint}")
+                    self._log("skipped_repeat", step=sig)
                     continue
 
                 if step.kind == "done":
@@ -328,6 +331,9 @@ class ActionTask:
                 if result.ok:
                     self._repeats = self._repeats + 1 if sig == self._last_sig else 1
                     self._last_sig = sig
+                    # What the screen looked like when this step was chosen: if the next look is identical, the
+                    # step had no visible effect and repeating it would just loop.
+                    self._last_fp = screen_fingerprint(self._snapshot)
                 if step.kind in ("click", "double_click") and result.ok:
                     await asyncio.sleep(0.25)
                     now_focused = await asyncio.wrap_future(self.perception.uia.focused())
