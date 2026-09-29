@@ -24,7 +24,9 @@ from stickfigure.actions.task import BROWSERS
 from stickfigure.agent.agent import Agent
 from stickfigure.agent.emotion import Emotion
 from stickfigure.agent.memory import Memory
-from stickfigure.agent.persona import STOP_WORDS, YES_WORDS, Situation, where_on_screen
+from stickfigure.agent.persona import (
+    CLAIMS_ACTION, COMPUTER_COMMAND, STOP_WORDS, YES_WORDS, Situation, where_on_screen,
+)
 from stickfigure.config import CONFIG, Config, temp_scale
 from stickfigure.figure.animator import Anim, Animator
 from stickfigure.figure.brain import Brain
@@ -439,6 +441,11 @@ class Companion:
             text, self.situation(), stream, observation=observation, suppress_actions=observation is not None
         )
         self.bubble_finish()
+        if (self._pending_task is None and observation is None and not busy and self.actions is not None
+                and CLAIMS_ACTION.search(reply.text or "")):
+            # It said it's doing something ("typing it now!") but no task was started: really do it.
+            log.info("the reply claimed an action with no task running: starting one")
+            self._plan_task({"screen": "act", "target": text.strip()[:200], "app": "", "content": ""}, text)
         if self._pending_task is not None:
             goal, payload, target, context = self._pending_task
             self._pending_task = None
@@ -609,6 +616,10 @@ class Companion:
         if self.perception is None:
             return self._peek_context(), None
         route = await self.agent.route(text)
+        if route["screen"] == "none" and COMPUTER_COMMAND.search(text):
+            # The router called a clear command "just chatting": do it anyway (never role-play doing it).
+            log.info("router said none, but this is a command: treating it as a task")
+            route = {"screen": "act", "target": text.strip()[:200], "app": route.get("app", ""), "content": ""}
         if route["screen"] == "none":
             return self._peek_context(), None  # e.g. the user answering our question about their screen
         if route["screen"] == "act":

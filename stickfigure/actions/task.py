@@ -12,6 +12,7 @@ with every stage written to the audit log. Esc, the kill switch, or the Stop but
 from __future__ import annotations
 
 import asyncio
+import difflib
 import itertools
 import logging
 import os
@@ -42,7 +43,14 @@ BROWSERS = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe",
 # Windows whose main job is editing a document: Enter/newlines there just make new lines.
 DOC_WINDOW = re.compile(r"(- Google Docs|- Word$|- Notepad$|Notepad\+\+|- Replit|Visual Studio Code|- Obsidian|"
                         r"- OneNote|- WordPad|Sublime Text|\.(txt|md|py|js|ts|html|css|json) -)", re.I)
-TERMINALISH = re.compile(r"(terminal|console|shell|search)", re.I)
+TERMINALISH = re.compile(r"(terminal|console|shell)", re.I)
+GOOGLE_DOCS = re.compile(r"- Google Docs\b", re.I)
+WRITING_GOAL = re.compile(r"\b(type|write|reply|respond|paste|add|put|say|greet|introduce|message|note)\b", re.I)
+# The request names a place to put the text (otherwise document writing is appended at the end).
+SOMEWHERE_SPECIFIC = re.compile(
+    r"\b(at the (top|start|beginning)|beginning of|top of|before|after|between|replace|instead of|in the middle|"
+    r"under(neath)? the|below the|above the|where (my|the) (cursor|caret)|at the (cursor|caret)|right here|"
+    r"next to|inside the|in the title|heading)\b", re.I)
 CODE_EDITOR = re.compile(r"(editor content|code editor|monaco|codemirror|cm-content|ace_text|text-input)", re.I)
 
 # approver(step, decision) -> "approve" | "approve_all" | "deny" | "stop"
@@ -74,6 +82,16 @@ def clickable_point(el_rect: Rect, window: Rect, target_pid: int, pid_at=None) -
         if pid_at(*pt) == target_pid:
             return pt
     return None
+
+
+def nearly_same_text(a: str, b: str) -> bool:
+    """The same message give or take a character or two (the model often re-proposes with tiny edits)."""
+    a, b = " ".join(a.split()).lower(), " ".join(b.split()).lower()
+    if not a or not b:
+        return False
+    if a == b or (min(len(a), len(b)) > 10 and (a in b or b in a)):
+        return True
+    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.85
 
 
 def screen_fingerprint(elements: list[UIElement]) -> int:
@@ -140,6 +158,9 @@ class ActionTask:
         self._stopped = ""
         self._typed: set[str] = set()
         self._last_sig = ""
+        self._skips = 0  # skipped proposals in a row
+        self._field: str | None = None
+        self._just_newlined = False
         self._last_fp = 0  # the last step that ran successfully, and how many times in a row
         self._repeats = 0
   # texts typed successfully this task (no accidental repeats)
@@ -222,7 +243,21 @@ class ActionTask:
                 # (Only if nothing on screen changed since it ran: "Next" twice on a changing page is fine.)
                 repeat = (sig == self._last_sig and step.kind in NO_REPEAT
                           and screen_fingerprint(self._snapshot) == self._last_fp)
-                typed_again = step.kind == "type_text" and step.text.strip() and step.text in self._typed
+                typed_again = step.kind == "type_text" and step.text.strip() and any(
+                    nearly_same_text(step.text, t) for t in self._typed)
+                if typed_again:
+                    # The text is already in: the job's done (don't keep going, don't loop).
+                    self._log("skipped_repeat", step=sig)
+                    return self._end("done", "Done - it's in there!")
+                if (step.kind in ("click", "double_click") and step.element is not None
+                        and step.element.role == "Document" and self._doc_window()
+                        and WRITING_GOAL.search(self.goal) and not SOMEWHERE_SPECIFIC.search(self.goal)):
+                    self._skips += 1
+                    self.history.append(f"{sig} -> SKIPPED (no need to click the page: type_text writes at the end "
+                                        "of the document by itself - type now)")
+                    if self._skips >= 4:
+                        return self._end("failed", "I kept going in circles instead of typing, so I stopped.")
+                    continue
                 if repeat or typed_again:
                     hint = ""
                     if step.kind == "click" and self._in_text_body(
@@ -232,6 +267,9 @@ class ActionTask:
                         hint = " That text is already typed (check 'Current text')."
                     self.history.append(f"{sig} -> SKIPPED (already done just now; do the next step instead).{hint}")
                     self._log("skipped_repeat", step=sig)
+                    self._skips += 1
+                    if self._skips >= 4:  # the last real step worked and it keeps proposing it: it's done
+                        return self._end("done", "Done!")
                     continue
 
                 if step.kind == "done":
@@ -329,6 +367,9 @@ class ActionTask:
                         note = (" (verified: the text is now in the field)" if _contains_words(after, step.text)
                                 else " (warning: I can't see the typed text in the field - check before retrying)")
                 if result.ok:
+                    self._just_newlined = (step.kind == "hotkey" and step.keys.lower().replace(" ", "")
+                                           in ("enter", "shift+enter")) or (step.kind == "type_text"
+                                                                             and step.text.endswith("\n"))
                     self._repeats = self._repeats + 1 if sig == self._last_sig else 1
                     self._last_sig = sig
                     # What the screen looked like when this step was chosen: if the next look is identical, the
@@ -343,6 +384,11 @@ class ActionTask:
                         note = f" (keyboard focus is now on {now_focused.describe()})"
                 self.history.append(f"{step.describe()} -> {result.status}"
                                     f"{': ' + result.detail if result.detail else ''}{note}")
+                if result.ok:
+                    self._skips = 0
+                if (step.kind == "type_text" and result.ok and self.payload
+                        and self.payload.strip()[:200] in step.text):
+                    return self._end("done", "Done - it's in there!")
                 if result.status == "cancelled":
                     return self._end("stopped", f"Stopped: {result.detail or self._stopped}.")
                 if result.status == "foreground_lost":
@@ -370,6 +416,7 @@ class ActionTask:
         focused = next((e for e in uia if e.focused), None)
         goal = self.goal + (f"\nContext: {self.context}" if self.context else "")
         field_text = await self._field_text()
+        self._field = field_text
         msgs = step_messages(goal, self.payload is not None, target.label(), rect, focused, elements, self.history,
                              field_text, plan=self.plan, windows=self._other_windows())
         try:
@@ -390,7 +437,21 @@ class ActionTask:
             already = self._in_text_body(focused)  # e.g. Google Docs' hidden text box: clicking again moves the caret
             if step.element is not None and not already and (focused is None or focused.rect != step.element.rect):
                 steps = [Move(*(step.point or step.element.center)), Click(), Pause(0.2)]  # focus the field first
-            steps.append(Type(step.text))
+            text = step.text
+            if (already or self._doc_window()) and not SOMEWHERE_SPECIFIC.search(f"{self.goal} {self.context}"):
+                # In a document, new writing goes at the END on its own line - never wherever a click happened
+                # to leave the caret (that's how it ended up typing into the middle of someone's text).
+                if GOOGLE_DOCS.search(win32.window_title(self.target.hwnd) or self.target.title):
+                    # A click near the top of a Google Doc puts the caret in the page HEADER, and Ctrl+End then only
+                    # goes to the end of the header. Esc leaves header/footer editing (harmless in the body).
+                    steps += [Keys("esc"), Pause(0.15)]
+                steps.append(Keys("ctrl+end"))
+                # Always on a fresh line at the bottom - unless the doc is known to be empty (or it just
+                # pressed Enter itself). If the text can't be read (canvas docs), assume there's text.
+                if (self._field is None or self._field.strip()) and not text.startswith("\n") \
+                        and not self._just_newlined:
+                    text = "\n" + text
+            steps.append(Type(text))
         elif step.kind == "hotkey":
             steps = [Keys(step.keys)]
         elif step.kind == "scroll":
@@ -502,15 +563,14 @@ class ActionTask:
             return None
         return body if body.rect.width * body.rect.height >= 0.15 * self._rect.width * self._rect.height else None
 
+    def _doc_window(self) -> bool:
+        return bool(DOC_WINDOW.search(win32.window_title(self.target.hwnd) or self.target.title))
+
     def _in_text_body(self, focused: UIElement | None) -> bool:
         """Is the caret in a multi-line text area (where Enter just makes a new line)?"""
-        if DOC_WINDOW.search(win32.window_title(self.target.hwnd) or self.target.title) and not (
-                focused is not None and (focused.is_password or focused.role in ("ComboBox",)
-                                         or TERMINALISH.search(f"{focused.name} {focused.automation_id}"))):
-            # A document editor (Docs, Word, Notepad...): unless focus is clearly in a search/combo box.
-            if focused is None or focused.role not in ("Edit",) or focused.rect.height >= 60 or \
-                    focused.rect.width * focused.rect.height < 2000:
-                return True
+        if self._doc_window() and not (focused is not None and (
+                focused.is_password or TERMINALISH.search(f"{focused.name} {focused.automation_id}"))):
+            return True  # a document editor (Docs, Word, Notepad...): its text is where typing goes
         if focused is not None and not focused.is_password:
             if focused.role == "Document" or (focused.role == "Edit" and focused.rect.height >= 60):
                 return True

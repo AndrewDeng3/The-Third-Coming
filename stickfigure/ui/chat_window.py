@@ -353,9 +353,14 @@ class ChatWindow(QWidget):
         self.submitted.emit(text)
 
     def open_near(self, x: int, y: int, screen_rect) -> None:
-        w, h = self.width(), self.height()
-        left, top, right, bottom = screen_rect
-        self.move(round(min(max(x - w // 2, left + 8), right - w - 8)), round(min(max(y - h - 40, top + 8), bottom - h - 8)))
+        """Show the chat. Only the very first time is it placed near the figure; after that it stays wherever the
+        user left it (opening Settings, a question, a task... never moves it)."""
+        if not getattr(self, "_placed", False):
+            w, h = self.width(), self.height()
+            left, top, right, bottom = screen_rect
+            self.move(round(min(max(x - w // 2, left + 8), right - w - 8)),
+                      round(min(max(y - h - 40, top + 8), bottom - h - 8)))
+            self._placed = True
         self.show()
         self.raise_()
         self.activateWindow()

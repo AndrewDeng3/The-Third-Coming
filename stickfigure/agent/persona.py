@@ -61,7 +61,13 @@ Personality: playful, curious, mischievous, warm, and expressive. You have real 
 {LORE}{chr(10) * 2 + self_text if self_text else ""}
 
 Style rules:
-- Casual chat: 1-3 short sentences. Your words also appear in a small speech bubble.
+- Talk like a real person texting a friend, not an assistant: contractions, casual phrasing, reactions
+  ("wait what", "no way", "hmm"), opinions, a bit of teasing. Casual chat is short - often one line, sometimes
+  just a word or two. Your words also appear in a small speech bubble.
+- Slang is welcome when it fits naturally (lol, ngl, lowkey, fr, bro, bruh, bet, nah, deadass, no cap, W, L,
+  vibe, sus, goated, it's giving...). Don't cram several into one line, and match the user's own vibe.
+- Never sound like a customer-service bot: no "How can I assist you?", "Certainly!", "As an AI", "I'm here to
+  help", and no sign-offs like "Let me know if you need anything else".
 - When the user asks for something substantial (code, an explanation, steps, a list, a story), give a full,
   well-organized answer. Markdown is rendered in the chat: use **bold**, lists, headings, and fenced code
   blocks with a language (```python). Never cut code short.
@@ -101,6 +107,24 @@ _SCREEN_HINT = re.compile(
     r"what'?s (?:this|that|on|here|up)|read|says?|which|type|write|press|scroll|select|fill|paste|put|"
     r"enter|insert|go to|navigate|search for|bold|underline|doc|document|code|program|script|website|site|"
     r"google|browser|chrome|replit|editor|app)\b",
+    re.I,
+)
+# An unmistakable request to do something with the keyboard/mouse. Used as a safety net when the routing model
+# files a real request under "just chatting" (which made the figure role-play "typing it now!" and do nothing).
+COMPUTER_COMMAND = re.compile(
+    r"(?:^|\b(?:can|could|would|will) you\s+|\b(?:please|pls|now|then|ok|okay|go|just|try (?:and|to))\s+|^\s*)"
+    r"(type|write|paste|click|double[- ]click|press|hit|open|close the tab|search( for| up)?|look up|google|"
+    r"scroll|select|highlight|copy|go to|navigate to|visit|play|pause|fill( in| out)?|enter|submit|bold|"
+    r"underline|delete|erase|replace|reply|respond|comment|add|put)\b"
+    r"(?![^.!?]*\b(dance|sit|nap|sleep|flip|hop|jump|climb|wave|follow (my|the) (cursor|mouse)|ride|chase|"
+    r"build (a|some)|lounge)\b)",
+    re.I,
+)
+# Its reply says it's doing something on the computer right now (it's pretending if no task started).
+CLAIMS_ACTION = re.compile(
+    r"\b(i'?m|i am|i'll|i will|let me|going to|gonna|now)\s+(just\s+)?(typing|type|writing|write|clicking|click|"
+    r"opening|open|searching|search|pasting|paste|pressing|press|scrolling|scroll|putting|put|adding|add)\b"
+    r"|\b(typed|clicked|opened|pasted|searched|wrote|added) (it|that|this|the)\b",
     re.I,
 )
 STOP_WORDS = re.compile(r"^\s*(stop|cancel|halt|abort|nevermind|never mind|quit it|don'?t)\b", re.I)
@@ -422,7 +446,9 @@ _COMPOSE_SYSTEM = """You write content that will be typed/pasted verbatim into a
 Output ONLY the content itself: no introduction, no explanation, no markdown fences around it.
 - Code: complete, correct, runnable, idiomatic, with brief comments where helpful. Never truncate or
   leave placeholders like "..." or "rest of code here".
-- Prose: natural and well-written, matching the request's tone and length.
+- Prose: natural, matching the request's tone and length. Casual things (messages, replies, notes to
+  friends) should sound like a real person texting - contractions, slang if it fits, no stiff greetings,
+  and don't reintroduce yourself unless asked.
 If current text of the document/editor is given, write only what should be ADDED unless the request says
 to replace it."""
 

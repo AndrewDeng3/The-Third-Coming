@@ -177,3 +177,8 @@ def test_adventure_clicks_only_plain_left_clicks_when_allowed_and_never_ads():
                 "Images for octopus"):
         assert SKIP_LINK.search(bad), bad
     assert not SKIP_LINK.search("How Octopuses Change Color - Smithsonian Magazine")
+
+
+def test_voice_is_human_and_slang_is_allowed():
+    p = system_prompt("The Third Coming", Emotion(), SIT, [])
+    assert "Slang is welcome" in p and "customer-service bot" in p
