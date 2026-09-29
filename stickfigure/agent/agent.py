@@ -15,7 +15,7 @@ from stickfigure.agent.emotion import Emotion
 from stickfigure.agent.memory import Fact, Memory
 from stickfigure.agent.ollama import Ollama, OllamaError
 from stickfigure.agent.persona import (
-    ACTIONS, EXTRACT_SCHEMA, IDLE_CHATTER_PROMPT, ROUTE_SCHEMA, Situation, TagFilter, clean_reply,
+    ACTIONS, EXTRACT_SCHEMA, needs_depth, IDLE_CHATTER_PROMPT, ROUTE_SCHEMA, Situation, TagFilter, clean_reply,
     extraction_messages, maybe_about_screen, route_messages, system_prompt,
 )
 from stickfigure.config import CONFIG, Config
@@ -89,6 +89,8 @@ class Agent:
         on_text: Callable[[str], None],
         observation: str | None = None,
         suppress_actions: bool = False,
+        on_thinking: Callable[[str], None] | None = None,
+        prefetched: "asyncio.Future | None" = None,
     ) -> Reply:
         if self._chatter_task and not self._chatter_task.done():
             self._chatter_task.cancel()
@@ -96,11 +98,12 @@ class Agent:
             self.busy = True
             try:
                 self.memory.add_message("user", user_text)
-                facts = await self._facts_for(user_text)
-                episodes = await self._episodes_for(user_text)
+                facts, episodes = await (prefetched if prefetched is not None else self._recall(user_text))
                 messages = [{"role": "system", "content": self._system(situation, facts, observation, episodes)}]
                 messages += self.memory.recent_messages(self.cfg.history_messages)
-                result = await self._stream(messages, on_text, self.cfg.max_reply_tokens)
+                deep = needs_depth(user_text)
+                result = await self._stream(messages, on_text, self.cfg.max_reply_tokens + (3000 if deep else 0),
+                                            think=deep, on_thinking=on_thinking)
                 if result.error is None:
                     self.memory.add_message("assistant", result.text)
                     # After looking at the screen, the reply is full of screen contents: keep those out of
@@ -293,13 +296,23 @@ class Agent:
         # Always keep a few recent facts (like the user's name) in view.
         return relevant + [f for f in self.memory.recent_facts(6) if f.id not in seen]
 
+    def prefetch(self, user_text: str) -> asyncio.Future:
+        """Start recalling memories for this message right away (runs alongside routing, not after it)."""
+        return asyncio.ensure_future(self._recall(user_text))
+
+    async def _recall(self, user_text: str) -> tuple[list[Fact], list[Fact]]:
+        facts, episodes = await asyncio.gather(self._facts_for(user_text), self._episodes_for(user_text))
+        return facts, episodes
+
     async def _stream(
-        self, messages: list[dict], on_text: Callable[[str], None], max_tokens: int, quiet_errors: bool = False
+        self, messages: list[dict], on_text: Callable[[str], None], max_tokens: int, quiet_errors: bool = False,
+        think: bool = False, on_thinking: Callable[[str], None] | None = None,
     ) -> Reply:
         tags = TagFilter()
         visible = ""
         try:
-            async for chunk in self.ollama.chat_stream(self.cfg.chat_model, messages, max_tokens=max_tokens):
+            async for chunk in self.ollama.chat_stream(self.cfg.chat_model, messages, max_tokens=max_tokens,
+                                                       think=think, on_thinking=on_thinking):
                 visible += tags.feed(chunk)
                 on_text(clean_reply(visible))
         except OllamaError as e:

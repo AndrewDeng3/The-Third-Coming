@@ -111,6 +111,21 @@ _SCREEN_HINT = re.compile(
     r"google|browser|chrome|replit|editor|app)\b",
     re.I,
 )
+# Questions worth thinking about first (the model reasons step by step, streamed, before answering). Casual chat
+# never pays for this.
+_DEEP = re.compile(
+    r"\b(explain|why|how (do|does|did|can|could|would|should|to|much|many|come)|what'?s the (difference|best|reason)|"
+    r"what (is|are) the (difference|best|reason)|code|program|script|function|algorithm|bug|debug|error|fix|solve|"
+    r"calculate|math|equation|prove|compare|pros and cons|plan|strategy|step[- ]by[- ]step|analy[sz]e|"
+    r"summari[sz]e|essay|story|recommend|should i|help me (with|figure|decide))\b",
+    re.I,
+)
+
+
+def needs_depth(text: str) -> bool:
+    return bool(_DEEP.search(text)) or len(text) > 220
+
+
 # An unmistakable request to do something with the keyboard/mouse. Used as a safety net when the routing model
 # files a real request under "just chatting" (which made the figure role-play "typing it now!" and do nothing).
 COMPUTER_COMMAND = re.compile(

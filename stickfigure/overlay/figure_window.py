@@ -17,7 +17,7 @@ from PySide6.QtWidgets import QWidget
 
 from stickfigure.config import CONFIG, Config
 from stickfigure.figure.animator import Animator
-from stickfigure.overlay.render import COLORS, draw_figure
+from stickfigure.overlay.render import COLORS, draw_figure, draw_weapon
 from stickfigure.win import win32
 
 
@@ -93,6 +93,8 @@ class FigureWindow(QWidget):
             ox += x - (self._last_pos[0] + self._size / 2)
             oy += y - (self._last_pos[1] + self._size / 2)
         draw_figure(p, self.anim.pose, (ox, oy), self.anim.P, self.color, self.cfg.stroke, self.cfg.hit_width)
+        if getattr(self.fig, "weapon", None):
+            draw_weapon(p, self.anim.pose, (ox, oy), self.anim.P, self.fig.weapon)
         p.end()
 
     # -- interaction ---------------------------------------------------------------------

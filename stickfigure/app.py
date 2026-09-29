@@ -39,6 +39,7 @@ from stickfigure.overlay.debug_overlay import DebugOverlay
 from stickfigure.overlay.figure_window import FigureWindow
 from stickfigure.figure.rival import Rival
 from stickfigure.overlay.highlight import Highlight
+from stickfigure.overlay.effects_window import EffectsWindow
 from stickfigure.overlay.rival_window import RivalWindow
 from stickfigure.perception.perception import Perception, Target, choose_target
 from stickfigure.perception.uia import UIAReader
@@ -122,7 +123,10 @@ class StickFigureApp:
         self.brain.trait = self.growth.weight
         self.brain.make_rival = self._make_rival
         self.brain.user_idle = win32.user_idle_seconds
+        self.brain.pose_snapshot = lambda: (dict(self.anim.pose), tuple(self.fig.body.position),
+                                            self.fig_window.color.getRgb()[:3])
         self.rivals: list[tuple[Rival, RivalWindow]] = []
+        self.effects_window = EffectsWindow(self.brain.fx)
         self.companion = Companion(
             self.fig, self.brain, self.anim, self.world, self.agent, self.memory, self.emotion, self._surface_name
         )
@@ -202,6 +206,7 @@ class StickFigureApp:
         c.bubble_stream = self._stream
         c.bubble_finish = self._finish_speech
         c.bubble_busy = lambda: self.bubble.busy
+        c.bubble_thought = lambda text: self.bubble.stream(self._bubble_text(text))  # shown, not spoken
         c.chat_add_assistant = self.chat.add_assistant
         self.chat.mic_clicked.connect(self.toggle_listen)
         self.chat.clear_clicked.connect(self.clear_chat)
@@ -402,8 +407,23 @@ class StickFigureApp:
         return rival
 
     def _update_rivals(self, dt: float) -> None:
+        fx = self.brain.fx
+        fx.update(dt)
+        if fx.active or self.rivals:
+            x, y = self.fig.body.position
+            mon = next((m.bounds for m in self.world.monitors if m.bounds.left <= x < m.bounds.right),
+                       self.world.monitors[0].bounds)
+            self.effects_window.cover(mon)
+            if not self.effects_window.isVisible():
+                self.effects_window.show()
+                self.tracker.ignore(self.effects_window.winId())
+            if self.effects_window.hwnd:
+                win32.bring_to_top(self.effects_window.hwnd)
+            self.effects_window.update()
+        elif self.effects_window.isVisible():
+            self.effects_window.hide()
         for rival, window in list(self.rivals):
-            rival.update(dt)
+            rival.update(dt * fx.time_scale)  # slow motion on finishers
             window.sync()
             if rival.done:
                 window.close()

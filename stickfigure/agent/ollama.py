@@ -55,15 +55,19 @@ class Ollama:
     # -- API ------------------------------------------------------------------------------------
 
     async def chat_stream(
-        self, model: str, messages: list[dict], *, temperature: float = 0.8, max_tokens: int = 200
+        self, model: str, messages: list[dict], *, temperature: float = 0.8, max_tokens: int = 200,
+        think: bool = False, on_thinking=None,
     ) -> AsyncIterator[str]:
+        """Streams the answer's text. `think`: let a reasoning model think first (for hard questions); its
+        reasoning streams to `on_thinking(chunk)` as it goes, so there's never a silent wait."""
+        reasoning = think and model.lower().startswith(THINKING_MODELS)
         body = {
             "model": model,
             "messages": messages,
             "stream": True,
             "keep_alive": self.keep_alive,
             "options": {"temperature": temperature, "num_predict": max_tokens, "num_ctx": NUM_CTX},
-            **no_thinking(model),
+            **({"think": True} if reasoning else no_thinking(model)),
         }
         caller = asyncio.get_running_loop()
         q: asyncio.Queue = asyncio.Queue()
@@ -82,7 +86,11 @@ class Ollama:
                         chunk = json.loads(line)
                         if "error" in chunk:
                             raise OllamaError(chunk["error"])
-                        text = chunk.get("message", {}).get("content", "")
+                        msg = chunk.get("message", {})
+                        thought = msg.get("thinking", "")
+                        if thought:
+                            caller.call_soon_threadsafe(q.put_nowait, ("think", thought))
+                        text = msg.get("content", "")
                         if text:
                             caller.call_soon_threadsafe(q.put_nowait, ("chunk", text))
                 caller.call_soon_threadsafe(q.put_nowait, ("end", None))
@@ -97,6 +105,9 @@ class Ollama:
                 kind, value = await q.get()
                 if kind == "chunk":
                     yield value
+                elif kind == "think":
+                    if on_thinking is not None:
+                        on_thinking(value)
                 elif kind == "end":
                     return
                 else:

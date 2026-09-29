@@ -21,19 +21,25 @@ class Character:
     color: tuple[int, int, int]
     extra: str = ""  # "crown" (King Orange)
     greet: tuple[str, ...] = ()
+    weapon: str = "sword"  # what they pick up in a weapons match
+    accent: tuple[int, int, int] | None = None  # weapon glow/tint
 
 
 # Colors sampled from the "Alan Becker DPETs" sprite frames.
 ROSTER = (
-    Character("The Chosen One", (0, 0, 0), greet=("The Chosen One?! Let's go!", "You again, Chosen One?")),
-    Character("The Dark Lord", (224, 32, 32), greet=("The Dark Lord?! Not today!", "Uh oh. Dark Lord's here.")),
-    Character("The Second Coming", (240, 96, 0), greet=("Big bro! Sparring time?", "Second Coming! Teach me something!")),
-    Character("King Orange", (208, 96, 0), "crown", greet=("King Orange?! Bow to THIS!", "Oh great, the king.")),
-    Character("Red", (208, 0, 16), greet=("Red! Rematch!", "Oh hey Red, wanna go?")),
-    Character("Blue", (64, 176, 224), greet=("Blue! You're going down!", "Blue wants a round, huh?")),
-    Character("Green", (48, 176, 64), greet=("Green! Let's see what you've got.", "Green? Bet.")),
-    Character("Yellow", (240, 192, 0), greet=("Yellow! Round one!", "Yellow's here, fight!")),
-    Character("Purple", (144, 32, 128), greet=("Purple?! Where'd you come from?", "Purple! Rematch!")),
+    Character("The Chosen One", (0, 0, 0), greet=("The Chosen One?! Let's go!", "You again, Chosen One?"),
+              weapon="staff"),
+    Character("The Dark Lord", (224, 32, 32), greet=("The Dark Lord?! Not today!", "Uh oh. Dark Lord's here."),
+              weapon="staff", accent=(255, 60, 60)),
+    Character("The Second Coming", (240, 96, 0), greet=("Big bro! Sparring time?", "Second Coming! Teach me something!"),
+              weapon="sword"),
+    Character("King Orange", (208, 96, 0), "crown", greet=("King Orange?! Bow to THIS!", "Oh great, the king."),
+              weapon="staff", accent=(240, 192, 0)),
+    Character("Red", (208, 0, 16), greet=("Red! Rematch!", "Oh hey Red, wanna go?"), weapon="sword"),
+    Character("Blue", (64, 176, 224), greet=("Blue! You're going down!", "Blue wants a round, huh?"), weapon="pickaxe"),
+    Character("Green", (48, 176, 64), greet=("Green! Let's see what you've got.", "Green? Bet."), weapon="sword"),
+    Character("Yellow", (240, 192, 0), greet=("Yellow! Round one!", "Yellow's here, fight!"), weapon="pickaxe"),
+    Character("Purple", (144, 32, 128), greet=("Purple?! Where'd you come from?", "Purple! Rematch!"), weapon="sword"),
 )
 
 
@@ -68,6 +74,7 @@ class _Puppet:
         self.activity = Activity.NONE
         self.activity_point = None
         self.pose_mode: str | None = "stance"
+        self.air_pose: str | None = None
         self.facing = 1
 
     @property
@@ -92,6 +99,7 @@ class Rival:
         self.done = False
         self.age = 0.0
         self.sparks: list[tuple[float, float, float]] = []  # (x, y, age) hit flashes
+        self.weapon: str | None = None
         self.puppet.facing = facing
         self._sync()
 
@@ -115,6 +123,14 @@ class Rival:
         self.vx, self.vy = direction * 420.0, -950.0
         self.puppet.tumble_spin = direction * 11.0
         self.fading = True
+
+    def air(self, vx: float, vy: float, pose: str | None, spin: float = 0.0) -> None:
+        """Leap: a jump kick, a hop over a sweep, a somersault (with `spin`)."""
+        self.pose(None)
+        self.puppet.air_pose = pose
+        self.vx, self.vy = vx, vy
+        self.puppet.tumble_spin = spin
+        self.walk_target = None
 
     def vanish(self) -> None:
         self.fading = True
@@ -150,6 +166,7 @@ class Rival:
             if self.lift <= 0 and self.vy > 0 and not self.fading:
                 self.vy = 0.0
                 self.puppet.tumble_spin = self.puppet.tumble_angle = 0.0
+                self.puppet.air_pose = None
         self.puppet.grounded = self.lift <= 0 and self.vy >= 0
         self.puppet.body.velocity.x = walking + self.vx
         self.puppet.body.velocity.y = self.vy

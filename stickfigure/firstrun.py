@@ -22,7 +22,7 @@ from stickfigure.config import CONFIG, Config
 
 OLLAMA_SETUP_URL = "https://ollama.com/download/OllamaSetup.exe"
 # Rough download sizes, for the setup window (GB).
-MODEL_SIZES = {"qwen3:8b": 5.2, "embeddinggemma": 0.6, "qwen2.5:7b-instruct": 4.7, "llama3.2:3b": 2.0,
+MODEL_SIZES = {"qwen3:14b": 9.3, "qwen3:8b": 5.2, "embeddinggemma": 0.6, "qwen2.5:7b-instruct": 4.7, "llama3.2:3b": 2.0,
                "qwen2.5-coder:7b": 4.7}
 
 Progress = Callable[[float, str], None]  # (fraction 0..1, status text)

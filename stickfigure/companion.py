@@ -94,6 +94,7 @@ class Companion:
         self.bubble_stream: Callable[[str], None] = lambda text: None
         self.bubble_finish: Callable[[], None] = lambda: None
         self.bubble_busy: Callable[[], bool] = lambda: False
+        self.bubble_thought: Callable[[str], None] = lambda text: None  # shows reasoning (not spoken)
         self.chat_add_assistant: Callable[[str], None] = lambda text: None
         # Perception hooks (set by the app; None = no eyes)
         self.perception: Perception | None = None
@@ -444,20 +445,36 @@ class Companion:
             self.brain.cancel()  # wake up to listen
         self.bubble_think()
 
+        recall = None
         if self._awaiting_answer is not None and not busy and not STOP_WORDS.match(text):
             observation, found = self._continue_with_answer(text), None
         else:
             if self._awaiting_answer is not None and STOP_WORDS.match(text):
                 self._awaiting_answer = None
+            recall = self.agent.prefetch(text)  # memories load while it decides whether to look/act
             observation, found = await self._perceive(text)
 
+        thought: list[str] = []
+        answering = False
+
         def stream(t: str) -> None:
+            nonlocal answering
             if t:
+                answering = True
                 self.bubble_stream(t)
             on_text(t)
 
+        def thinking(chunk: str) -> None:
+            # Hard question: show its reasoning live (so there's no silent wait) until the answer starts.
+            thought.append(chunk)
+            if not answering:
+                tail = " ".join("".join(thought).split())[-120:]
+                self.bubble_thought("💭 " + tail)
+                on_text("💭 *" + tail + "*")
+
         reply = await self.agent.reply(
-            text, self.situation(), stream, observation=observation, suppress_actions=observation is not None
+            text, self.situation(), stream, observation=observation, suppress_actions=observation is not None,
+            on_thinking=thinking, prefetched=recall,
         )
         self.bubble_finish()
         if (self._pending_task is None and observation is None and not busy and self.actions is not None
