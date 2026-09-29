@@ -123,6 +123,8 @@ class StickFigureApp:
         self.brain.trait = self.growth.weight
         self.brain.make_rival = self._make_rival
         self.brain.user_idle = win32.user_idle_seconds
+        self.brain.pose_snapshot = lambda: (dict(self.anim.pose), tuple(self.fig.body.position),
+                                            self.fig_window.color.getRgb()[:3])
         self.rivals: list[tuple[Rival, RivalWindow]] = []
         self.effects_window = EffectsWindow(self.brain.fx)
         self.companion = Companion(
@@ -204,6 +206,7 @@ class StickFigureApp:
         c.bubble_stream = self._stream
         c.bubble_finish = self._finish_speech
         c.bubble_busy = lambda: self.bubble.busy
+        c.bubble_thought = lambda text: self.bubble.stream(self._bubble_text(text))  # shown, not spoken
         c.chat_add_assistant = self.chat.add_assistant
         self.chat.mic_clicked.connect(self.toggle_listen)
         self.chat.clear_clicked.connect(self.clear_chat)
@@ -420,7 +423,7 @@ class StickFigureApp:
         elif self.effects_window.isVisible():
             self.effects_window.hide()
         for rival, window in list(self.rivals):
-            rival.update(dt)
+            rival.update(dt * fx.time_scale)  # slow motion on finishers
             window.sync()
             if rival.done:
                 window.close()

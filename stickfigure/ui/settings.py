@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QSlider, QVBoxLayout, QWidget,
 )
 
+from stickfigure.config import CONFIG
 from stickfigure.names import NAME
 from stickfigure.overlay.render import COLORS
 from stickfigure.win import autostart
@@ -147,7 +148,7 @@ class SettingsPanel(QWidget):
             "temperature": self.temperature.value(),
             "adventures": self.adventures.isChecked(),
             "supervised": self.supervised.isChecked(),
-            "chat_model": self.chat_model.text().strip() or "llama3.2:3b",
+            "chat_model": self.chat_model.text().strip() or CONFIG.chat_model,
         }
 
     def _save(self) -> None:

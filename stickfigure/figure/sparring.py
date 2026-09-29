@@ -15,8 +15,9 @@ import random
 from typing import Generator
 
 from stickfigure.figure.animator import Animator
-from stickfigure.figure.effects import Effects
+from stickfigure.figure.effects import Effects, Fighter
 from stickfigure.figure.rival import _Puppet, pick_character
+from stickfigure.names import NAME
 from stickfigure.overlay.render import weapon_segment
 from stickfigure.world.nav import usable_span
 
@@ -85,14 +86,27 @@ class SparMixin:
             fig.weapon = random.choice(("sword", "pickaxe"))
             rival.weapon = who.weapon or "sword"
         fig.events.append(("spar", "start", who))
+        H = self.cfg.figure_height
+        me = Fighter(NAME, OUR_MAGIC)
+        them = Fighter(who.name, magic_color(who))
+        self.fx.bars = (me, them) if side > 0 else (them, me)  # bars sit on the same sides as the fighters
+        self._me_right = side < 0
+        mid = (fig.body.position.x + rival.x) / 2
+        self.fx.bars_at = (mid, fig.body.position.y - 2.4 * H)
+        self._round = getattr(self, "_round", 0) + 1
+        self._fclock = self._last_ghost = 0.0
         try:
             fig.walk_to(None)
             fig.facing = side
             fig.pose_mode = self._stance(fig.weapon)
             rival.pose(self._stance(rival.weapon))
+            self.fx.banner(f"ROUND {self._round}", mid, fig.body.position.y - 1.6 * H, life=0.9)
             yield from self._idle(0.9)
+            self.fx.banner("FIGHT!", mid, fig.body.position.y - 1.6 * H, (255, 90, 60), 1.2, life=0.8)
+            yield from self._idle(0.6)
             moves = [(3.0, self._x_strike), (1.5, self._x_combo), (1.5, self._x_jumpkick), (1.0, self._x_sweep),
-                     (1.0, self._x_dodge), (1.5, self._x_magic), (1.0, self._x_airclash), (1.0, self._x_clash)]
+                     (1.0, self._x_dodge), (1.5, self._x_magic), (1.0, self._x_airclash), (1.0, self._x_clash),
+                     (1.5, self._x_dash), (1.2, self._x_flurry), (1.0, self._x_beam)]
             for _ in range(random.randint(4, 7)):
                 total = sum(w for w, _ in moves)
                 r = random.uniform(0, total)
@@ -111,6 +125,45 @@ class SparMixin:
             if not rival.fading:
                 rival.vanish()
             self._fight = None
+            self.fx.bars = None
+
+    # -- drama ----------------------------------------------------------------------------------------------------
+
+    def _trail(self) -> None:
+        """Afterimages for whoever's moving fast (called every frame during dashes, jumps and knockbacks)."""
+        self._fclock = getattr(self, "_fclock", 0.0) + self.dt
+        if self._fclock - getattr(self, "_last_ghost", 0.0) < 0.04 or self._fight is None:
+            return
+        self._last_ghost = self._fclock
+        rival = self._fight[0]
+        if abs(rival.vx) + abs(rival.vy) + abs(rival.puppet.body.velocity.x) > 260:
+            self.fx.ghost(dict(rival.anim.pose), *rival.puppet.body.position, rival.who.color)
+        v = self.fig.body.velocity
+        snap = self.pose_snapshot()
+        if snap is not None and abs(v.x) + abs(v.y) > 260:
+            pose, (x, y), color = snap
+            self.fx.ghost(pose, x, y, color)
+
+    def _moving(self, seconds: float) -> Task:
+        """Like _idle, but leaving afterimages behind fast movers."""
+        t = seconds
+        while t > 0:
+            t -= self.dt
+            self._trail()
+            yield
+
+    def _hitstop(self, seconds: float = 0.09) -> Task:
+        """The split-second freeze on a heavy blow that sells the impact."""
+        yield from self._idle(seconds)
+
+    def _hurt_them(self, amount: float) -> None:
+        self.fx.damage(not self._me_right, amount)
+
+    def _hurt_me(self, amount: float) -> None:
+        self.fx.damage(self._me_right, amount)
+
+    def _dust_at(self, x: float) -> None:
+        self.fx.dust(x, self.fig.feet[1])
 
     # -- positioning -------------------------------------------------------------------------------------------
 
@@ -137,6 +190,7 @@ class SparMixin:
             t += self.dt
             yield
         fig.walk_to(None)
+        rival.walk_to(None)  # (a leftover target would fight any later movement, e.g. a dash)
         fig.facing = side
         rival.puppet.facing = -side
         yield from self._settle()
@@ -189,24 +243,31 @@ class SparMixin:
             rival.pose(move)
         yield from self._idle(0.11)  # full extension
         x, y = self._strike_point(ours, move)
-        big = move in ("kick", "uppercut", "slash")
+        big = move in ("kick", "uppercut", "slash", "thrust")
         self.fx.spark(x, y, size=1.3 if big else 1.0)
+        if reaction != "block" and big:
+            self.fx.impact(x, y)
+            yield from self._hitstop()
+        dmg = 2.0 if reaction == "block" else (12.0 if big else 8.0)
+        (self._hurt_them if ours else self._hurt_me)(dmg)
         if ours:
             if reaction == "block":
                 rival.pose("block")
                 rival.vx = side * 150.0
             else:
-                rival.hit(side, 420.0 if big else 330.0)
+                rival.hit(side, 520.0 if big else 360.0)
                 fig.events.append(("spar", "hit", rival.who))
+                self.fx.dust(rival.x, rival.floor_y)
         else:
             if reaction == "block":
                 fig.pose_mode = "block"
                 fig.body.velocity = (-side * 150.0, fig.body.velocity.y)
             else:
                 fig.pose_mode = "hurt"
-                fig.body.velocity = (-side * (380.0 if big else 300.0), fig.body.velocity.y)
+                fig.body.velocity = (-side * (460.0 if big else 320.0), fig.body.velocity.y)
                 fig.events.append(("spar", "hurt", rival.who))
-        yield from self._idle(0.3)
+                self._dust_at(fig.body.position.x)
+        yield from self._moving(0.3)
 
     def _x_strike(self, ours: bool) -> Task:
         move = self._pick_strike(ours)
@@ -279,14 +340,19 @@ class SparMixin:
             fig.facing = side
         else:
             rival.air(-side * 420.0, -560.0, "flykick")
+        self._dust_at(fig.body.position.x if ours else rival.x)
         t = 0.0
         while t < 1.5:
             t += self.dt
+            self._trail()
             x, y = self._strike_point(ours, "flykick")
             (fx, fy), (rx, ry) = self._centers()
             front = (rx - side * TORSO * H) if ours else (fx + side * TORSO * H)
             if (x - front) * (side if ours else -side) >= 0:
                 self.fx.spark(x, y, size=1.3)
+                if not block:
+                    self.fx.impact(x, y, 1.2)
+                (self._hurt_them if ours else self._hurt_me)(3.0 if block else 14.0)
                 if ours:
                     if block:
                         rival.pose("block")
@@ -316,15 +382,17 @@ class SparMixin:
         t = 0.0
         while t < 1.5:
             t += self.dt
+            self._trail()
             (fx, fy), (rx, ry) = self._centers()
             if abs(rx - fx) <= 2 * reach:
                 mx, my = (fx + rx) / 2, (self._strike_point(True, "flykick")[1] + self._strike_point(False, "flykick")[1]) / 2
                 self.fx.spark(mx, my, size=1.6)
-                fig.body.velocity = (-side * 300.0, fig.body.velocity.y)
-                rival.vx = side * 300.0
+                self.fx.impact(mx, my, 1.4)
+                fig.body.velocity = (-side * 360.0, fig.body.velocity.y)
+                rival.vx = side * 360.0
                 break
             yield
-        yield from self._idle(0.3)
+        yield from self._moving(0.4)
 
     def _x_clash(self, _: bool) -> Task:
         """Both strike at once and the blows meet in the middle (blade on blade, or fist on fist)."""
@@ -338,9 +406,11 @@ class SparMixin:
         yield from self._idle(0.12)
         (ax, ay), (bx, by) = self._strike_point(True, mine), self._strike_point(False, theirs)
         self.fx.spark((ax + bx) / 2, (ay + by) / 2, size=1.5)
-        fig.body.velocity = (-side * 200.0, fig.body.velocity.y)
-        rival.vx = side * 200.0
-        yield from self._idle(0.35)
+        self.fx.impact((ax + bx) / 2, (ay + by) / 2, 1.2)
+        yield from self._hitstop(0.12)  # locked together for a beat
+        fig.body.velocity = (-side * 280.0, fig.body.velocity.y)
+        rival.vx = side * 280.0
+        yield from self._moving(0.35)
 
     def _x_magic(self, ours: bool) -> Task:
         """An energy orb from the caster's hand; the defender shields, jumps it, or takes it."""
@@ -353,7 +423,9 @@ class SparMixin:
             fig.pose_mode = "cast"
         else:
             rival.pose("cast")
-        yield from self._idle(0.15)
+        cx, cy = self._strike_point(ours, "cast")
+        self.fx.aura(cx, cy, color, 0.35 * H, life=0.4)
+        yield from self._idle(0.4)
         x, y = self._strike_point(ours, "cast")
         orb = self.fx.orb(x, y, (side if ours else -side) * 900.0, color)
         roll = random.random()
@@ -386,7 +458,9 @@ class SparMixin:
                     self.fx.fizzle(orb)  # sails underneath
                     break
                 self.fx.pop(orb)
+                (self._hurt_them if ours else self._hurt_me)(3.0 if reaction == "shielded" else 16.0)
                 if reaction == "hit":
+                    self.fx.impact(orb.x, orb.y, 1.2)
                     if ours:
                         rival.hit(side, 460.0)
                         fig.events.append(("spar", "hit", rival.who))
@@ -397,6 +471,116 @@ class SparMixin:
                 break
             yield
         yield from self._idle(0.35)
+
+    def _x_dash(self, ours: bool) -> Task:
+        """Back off, then rocket in with afterimages and land a heavy blow."""
+        rival, side, lo, hi = self._fight
+        fig = self.fig
+        move = self._pick_strike(ours) if (fig.weapon if ours else rival.weapon) else random.choice(("punch", "kick"))
+        H = self.cfg.figure_height
+        yield from self._gap_to(min(420.0, hi - lo - 40))
+        target_gap = self._reach(ours, move) + TORSO * H
+        if ours:
+            self._dust_at(fig.body.position.x)
+            goal = rival.x - side * target_gap
+            while (goal - fig.body.position.x) * side > 3:
+                step = min(abs(goal - fig.body.position.x), 1100.0 * self.dt)
+                fig.body.position = (fig.body.position.x + side * step, fig.body.position.y)
+                fig.body.velocity = (side * 1100.0, fig.body.velocity.y)
+                fig.pose_mode = "punch" if move == "punch" else None
+                self._trail()
+                yield
+            fig.body.velocity = (0.0, fig.body.velocity.y)
+            self.world.space.reindex_shapes_for_body(fig.body)
+        else:
+            self.fx.dust(rival.x, rival.floor_y)
+            goal = fig.body.position.x + side * target_gap
+            while (rival.x - goal) * side > 3:
+                step = min(abs(rival.x - goal), 1100.0 * self.dt)
+                rival.x -= side * step
+                rival.puppet.body.velocity.x = -side * 1100.0
+                self._trail()
+                yield
+        yield from self._land_blow(ours, move, "block" if random.random() < 0.25 else "hit")
+
+    def _x_flurry(self, ours: bool) -> Task:
+        """A barrage of rapid punches, then a launcher that knocks them up into the air."""
+        rival, side, _, _ = self._fight
+        fig = self.fig
+        H = self.cfg.figure_height
+        yield from self._gap_to(self._reach(ours, "punch") + TORSO * H)
+        for i in range(random.randint(5, 8)):
+            if ours:
+                fig.pose_mode = "punch" if i % 2 == 0 else "stance"
+                rival.pose("block" if i < 3 else "hurt")
+            else:
+                rival.pose("punch" if i % 2 == 0 else "stance")
+                fig.pose_mode = "block" if i < 3 else "hurt"
+            yield from self._idle(0.07)
+            if i % 2 == 0:
+                x, y = self._strike_point(ours, "punch")
+                self.fx.spark(x, y + random.uniform(-12, 12), size=0.8)
+                (self._hurt_them if ours else self._hurt_me)(1.0 if i < 3 else 3.0)
+        # the launcher
+        if ours:
+            fig.pose_mode = "uppercut"
+        else:
+            rival.pose("uppercut")
+        yield from self._idle(0.12)
+        x, y = self._strike_point(ours, "uppercut")
+        self.fx.spark(x, y, size=1.5)
+        self.fx.impact(x, y, 1.4)
+        yield from self._hitstop(0.1)
+        (self._hurt_them if ours else self._hurt_me)(10.0)
+        if ours:
+            rival.air(side * 180.0, -760.0, "tuck", spin=side * 9.0)
+        else:
+            fig.pose_mode = None
+            fig.air_pose = "tuck"
+            fig.jump(-side * 180.0, -760.0)
+            fig.tumble_spin = -side * 9.0
+        yield from self._moving(0.7)
+
+    def _x_beam(self, ours: bool) -> Task:
+        """Charge up (aura), then an energy beam across to the other fighter: blocked by a shield, or a hit."""
+        rival, side, _, _ = self._fight
+        fig = self.fig
+        H = self.cfg.figure_height
+        yield from self._gap_to(random.uniform(300, 420))
+        color = OUR_MAGIC if ours else magic_color(rival.who)
+        if ours:
+            fig.pose_mode = "cast"
+        else:
+            rival.pose("cast")
+        x, y = self._strike_point(ours, "cast")
+        self.fx.aura(x, y, color, 0.45 * H, life=0.8)
+        yield from self._idle(0.8)
+        x, y = self._strike_point(ours, "cast")
+        (fx, fy), (rx, ry) = self._centers()
+        tx = (rx - side * TORSO * H) if ours else (fx + side * TORSO * H)
+        shield = random.random() < 0.45
+        if shield:
+            cx, cy = (rx, ry) if ours else (fx, fy)
+            tx = cx - (side if ours else -side) * 0.55 * H
+            self.fx.shield(cx, cy, magic_color(rival.who) if ours else OUR_MAGIC, 0.55 * H)
+            if ours:
+                rival.pose("block")
+            else:
+                fig.pose_mode = "block"
+        self.fx.beam(x, y, tx, y, color, life=0.7)
+        yield from self._idle(0.25)
+        self.fx.burst(tx, y, color, 1.4)
+        (self._hurt_them if ours else self._hurt_me)(4.0 if shield else 18.0)
+        if not shield:
+            self.fx.impact(tx, y, 1.3)
+            if ours:
+                rival.hit(side, 560.0)
+                fig.events.append(("spar", "hit", rival.who))
+            else:
+                fig.pose_mode = "hurt"
+                fig.body.velocity = (-side * 480.0, fig.body.velocity.y)
+                fig.events.append(("spar", "hurt", rival.who))
+        yield from self._moving(0.45)
 
     def _finisher(self, win: bool) -> Task:
         rival, side, _, _ = self._fight
@@ -419,11 +603,17 @@ class SparMixin:
                 yield from self._idle(0.13)
                 x, y = self._strike_point(True, style)
                 self.fx.spark(x, y, size=1.8)
+            self.fx.impact(*self._strike_point(True, "cast" if style == "magic" else style), 2.0)
+            self.fx.slowmo(1.1, 0.3)
+            yield from self._hitstop(0.18)
+            self._hurt_them(100.0)
             rival.launch(side)
             fig.events.append(("spar", "win", who))
-            yield from self._idle(0.5)
+            self.fx.banner("K.O.!", (fig.body.position.x + rival.x) / 2, fig.body.position.y - 1.6 * self.cfg.figure_height,
+                           (255, 80, 60), 1.4, life=1.6)
+            yield from self._moving(0.6)
             fig.pose_mode = "victory"
-            yield from self._idle(1.4)
+            yield from self._idle(1.6)
         else:
             move = self._pick_strike(False) if rival.weapon else "kick"
             yield from self._gap_to(self._reach(False, move) + TORSO * self.cfg.figure_height)
@@ -431,6 +621,12 @@ class SparMixin:
             yield from self._idle(0.13)
             x, y = self._strike_point(False, move)
             self.fx.spark(x, y, size=1.6)
+            self.fx.impact(x, y, 1.8)
+            self.fx.slowmo(0.9, 0.35)
+            yield from self._hitstop(0.15)
+            self._hurt_me(100.0)
+            self.fx.banner("K.O.", (fig.body.position.x + rival.x) / 2, fig.body.position.y - 1.6 * self.cfg.figure_height,
+                           (200, 200, 220), 1.2, life=1.6)
             fig.pose_mode = None
             fig.jump(-side * 380.0, -520.0)
             fig.tumble_spin = -side * 9.0

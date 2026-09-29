@@ -53,6 +53,7 @@ class Brain(SparMixin):
         self.make_rival = lambda who, x, floor_y, facing: None
         self.user_idle = lambda: 0.0  # seconds since the user touched mouse/keyboard
         self.fx = Effects()  # sparks, magic orbs, shields (drawn by the app)
+        self.pose_snapshot = lambda: None  # () -> (pose, (x, y), color) of the figure, for afterimages
         self._fight = None  # (rival, side, lo, hi) during a sparring match
 
     # -- frame update ----------------------------------------------------------------

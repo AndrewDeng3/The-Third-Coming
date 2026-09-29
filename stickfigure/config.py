@@ -54,12 +54,13 @@ class Config:
     buddy_name: str = "The Third Coming"  # fixed (see agent/lore.py); not a user setting
     user_name: str = ""  # what the figure calls you ("" = unknown, it may learn it from chat)
     ollama_url: str = "http://127.0.0.1:11434"
-    # One model for chat, memory, and hands: it stays loaded (no swapping), and qwen3:8b with thinking
-    # switched off is quick on a 16 GB GPU while being far smarter than 3B models.
-    chat_model: str = "qwen3:8b"
-    extract_model: str = "qwen3:8b"
+    # One model for chat, memory, and hands: it stays loaded (no swapping). qwen3:14b fits a 16 GB GPU, streams its
+    # first words in ~0.1-0.2 s, and thinks step by step (streamed) only for hard questions. (qwen3:8b is the
+    # faster, lighter alternative for smaller GPUs.)
+    chat_model: str = "qwen3:14b"
+    extract_model: str = "qwen3:14b"
     embed_model: str = "embeddinggemma"
-    code_model: str = "qwen3:8b"  # writes code/long text for tasks ("qwen2.5-coder:7b" is an alternative)
+    code_model: str = "qwen3:14b"  # writes code/long text for tasks ("qwen2.5-coder:7b" is an alternative)
     history_messages: int = 40  # recent chat turns sent with every message
     recall_facts: int = 10  # long-term facts recalled by relevance (+ the most recent ones)
     recall_episodes: int = 4  # older conversations recalled by relevance
@@ -67,7 +68,7 @@ class Config:
     idle_chatter: tuple[float, float] = (240.0, 540.0)  # random gap between spontaneous remarks
     think_gap: tuple[float, float] = (25.0, 60.0)  # the mind decides what to do next this often
     # Actions (Phase 5)
-    action_model: str = "qwen3:8b"
+    action_model: str = "qwen3:14b"
     supervised: bool = False  # True = approve every step; False = steps just run (risky ones still ask)
     max_steps: int = 60
     max_failures: int = 3
