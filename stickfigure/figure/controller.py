@@ -52,6 +52,7 @@ class Figure:
         self.events: list[tuple] = []
         self.activity = Activity.NONE
         self.activity_point: tuple[float, float] | None = None  # world point for PLACE/WAVE
+        self.pose_mode: str | None = None  # a named pose while grounded (fight moves: "punch", "block"...)
 
         self.grounded = False
         self.ground_shape: pymunk.Shape | None = None

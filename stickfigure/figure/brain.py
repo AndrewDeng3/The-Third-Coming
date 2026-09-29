@@ -47,6 +47,9 @@ class Brain:
         self._last_structure = time.monotonic()  # first unprompted build waits a while too
         # Personality multiplier (Growth.weight): trait name, strength -> ~0.5..1.5. Neutral until wired up.
         self.trait = lambda name, strength=1.0: 1.0
+        # Sparring: (character, x, floor_y, facing) -> Rival or None (set by the app, which draws it)
+        self.make_rival = lambda who, x, floor_y, facing: None
+        self.user_idle = lambda: 0.0  # seconds since the user touched mouse/keyboard
 
     # -- frame update ----------------------------------------------------------------
 
@@ -81,6 +84,7 @@ class Brain:
     def cancel(self) -> None:
         if self.task is not None:
             self.task.close()
+        self.fig.pose_mode = None
         if self.fig.riding:
             self.fig.stop_ride()
         self._finish()
@@ -121,6 +125,7 @@ class Brain:
             "climb_element": self._climb_element,
             "reach_cursor": self._build_up_to_cursor,
             "explore": self._travel_somewhere,
+            "fight": self._spar,
             "flip": self._flip,
             "chase": self._chase,
         }
@@ -182,6 +187,9 @@ class Brain:
             (4 * (e.energy > 0.5) * (0.4 + e.curiosity) * near_cursor * daring, "ride", self._ride_cursor),
             (4 * (e.energy > 0.55) * max(0.0, e.happiness - 0.3) * goofy, "chase", self._chase),
             (4 * max(0.0, e.affection - 0.4) * near_cursor, "follow", lambda: self._follow_cursor(random.uniform(15, 30))),
+            # An idle animation: a legend from the series warps in for a sparring match.
+            (4 * (e.energy > 0.45) * goofy * daring * (self.user_idle() > 20) * (cur[0] == "floor"), "spar",
+             self._spar),
             (4 * (0.4 + e.curiosity) * (e.energy > 0.3) * bool(self.world.element_shapes) * explorer, "climb_element",
              self._climb_element),
             (3 * (e.energy > 0.5) * (0.3 + e.curiosity) * self._cursor_above_and_still() * daring, "reach_cursor",
@@ -374,6 +382,128 @@ class Brain:
             yield
         fig.walk_to(None)
         return True
+
+    # -- sparring with the legends --------------------------------------------------------------------------
+
+    def _spar(self) -> Task:
+        """A choreographed fight with one of the original stick figures: stance, a few exchanges (punches,
+        kicks, blocks, dodges), then a finisher - usually an uppercut that launches them off, sometimes a loss."""
+        fig = self.fig
+        seg = self._seg(self._current_key())
+        span = usable_span(seg, self.cfg) if seg else None
+        if span is None:
+            return False
+        lo, hi, _ = span
+        fx = fig.body.position.x
+        side = random.choice((-1, 1))
+        if not lo <= fx + side * 300 <= hi:
+            side = -side
+            if not lo <= fx + side * 300 <= hi:
+                return False  # no room to fight here
+        from stickfigure.figure.rival import pick_character
+
+        who = pick_character()
+        rival = self.make_rival(who, fx + side * 300, fig.feet[1], -side)
+        if rival is None:
+            return False
+        fig.events.append(("spar", "start", who))
+        try:
+            fig.walk_to(None)
+            fig.facing = side
+            fig.pose_mode = "stance"
+            yield from self._idle(0.9)
+            for _ in range(random.randint(3, 6)):
+                yield from self._spar_close(rival, side, lo, hi)
+                if random.random() < 0.55:
+                    yield from self._spar_attack(rival, side)
+                else:
+                    yield from self._spar_defend(rival, side)
+                yield from self._idle(random.uniform(0.25, 0.6))
+            yield from self._spar_close(rival, side, lo, hi)
+            if random.random() < 0.8:  # the finisher
+                fig.pose_mode = "uppercut"
+                yield from self._idle(0.14)
+                rival.spark(fig.body.position.x + side * 45, fig.body.position.y - 30)
+                rival.launch(side)
+                fig.events.append(("spar", "win", who))
+                yield from self._idle(0.5)
+                fig.pose_mode = "victory"
+                yield from self._idle(1.4)
+            else:  # it loses this one (lands on its feet anyway)
+                rival.pose("kick")
+                yield from self._idle(0.14)
+                rival.spark(fig.body.position.x, fig.body.position.y - 10)
+                fig.pose_mode = None
+                fig.jump(-side * 380, -520)
+                fig.tumble_spin = -side * 9.0
+                fig.events.append(("spar", "lose", who))
+                yield from self._await_landing(None)
+                rival.pose("taunt")
+                yield from self._idle(1.3)
+                rival.vanish()
+            return True
+        finally:
+            fig.pose_mode = None
+            fig.walk_to(None)
+            if not rival.fading:
+                rival.vanish()
+
+    def _spar_close(self, rival, side: int, lo: float, hi: float) -> Task:
+        """Step in toward each other until they're at fighting distance."""
+        fig = self.fig
+        fig.pose_mode = None
+        rival.pose(None)
+        mid = min(max((fig.body.position.x + rival.x) / 2, lo + 45), hi - 45)
+        fig.walk_to(mid - side * 42)
+        rival.walk_to(mid + side * 42)
+        t = 0.0
+        while t < 1.5 and (abs(fig.body.position.x - (mid - side * 42)) > 6 or abs(rival.x - (mid + side * 42)) > 6):
+            t += self.dt
+            yield
+        fig.walk_to(None)
+        fig.facing = side
+        rival.puppet.facing = -side
+        fig.pose_mode = "stance"
+        rival.pose("stance")
+
+    def _spar_attack(self, rival, side: int) -> Task:
+        fig = self.fig
+        move = random.choice(("punch", "punch", "kick"))
+        fig.pose_mode = move
+        yield from self._idle(0.1)
+        hit_y = fig.body.position.y - (40 if move == "punch" else 5)
+        rival.spark(fig.body.position.x + side * 55, hit_y)
+        if random.random() < 0.35:
+            rival.pose("block")
+            rival.vx = side * 140.0
+        else:
+            rival.hit(side)
+            fig.events.append(("spar", "hit", rival.who))
+        yield from self._idle(0.32)
+        fig.pose_mode = "stance"
+        rival.pose("stance")
+
+    def _spar_defend(self, rival, side: int) -> Task:
+        fig = self.fig
+        rival.pose(random.choice(("punch", "kick")))
+        yield from self._idle(0.09)
+        roll = random.random()
+        if roll < 0.35:  # dodge: hop over it
+            fig.pose_mode = None
+            fig.jump(0.0, -470.0)
+            yield from self._await_landing(None)
+        else:
+            rival.spark(fig.body.position.x, fig.body.position.y - 30)
+            if roll < 0.7:
+                fig.pose_mode = "block"
+                fig.body.velocity = (-side * 150.0, fig.body.velocity.y)
+            else:
+                fig.pose_mode = "hurt"
+                fig.body.velocity = (-side * 320.0, fig.body.velocity.y)
+                fig.events.append(("spar", "hurt", rival.who))
+            yield from self._idle(0.35)
+        fig.pose_mode = "stance"
+        rival.pose("stance")
 
     def _flip(self) -> Task:
         """A backflip on the spot: one full turn in the air, landing on its feet."""

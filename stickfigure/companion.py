@@ -241,7 +241,7 @@ class Companion:
             return True
         body = {"wander": "explore", "follow_cursor": "follow", "ride_cursor": "ride", "chase_cursor": "chase",
                 "flip": "flip", "dance": "dance", "climb": "climb", "build": "build", "sit": "sit", "nap": "sleep",
-                "climb_element": "climb_element", "reach_cursor": "reach_cursor"}
+                "climb_element": "climb_element", "reach_cursor": "reach_cursor", "spar": "fight"}
         if action in body:
             if action == "nap" and self.emotion.energy > 0.6:
                 return False
@@ -350,6 +350,8 @@ class Companion:
             self._grow("boldness", 0.006, "the user threw me across the screen")
             self._grow("sass", 0.004)
             self._react("thrown", 0.7)
+        elif kind == "spar":
+            self._on_spar(event[1], event[2])
         elif kind == "ride":
             self._react("ride", 0.8)
             self._first("first_ride", "The first time I grabbed the Animator's cursor and rode it around!")
@@ -358,6 +360,23 @@ class Companion:
             e.on_knocked()
             self._grow("boldness", -0.006, "I got knocked flat after a throw")
             self._react("knocked", 0.6)
+
+    def _on_spar(self, phase: str, who) -> None:
+        short = who.name.removeprefix("The ")
+        if phase == "start":
+            self.bubble_say(random.choice(who.greet) if who.greet else f"{who.name}?! Let's go!")
+            self._first("first_fight", f"My first sparring match - against {who.name}!")
+        elif phase == "win":
+            self.bubble_say(random.choice(["GG!", f"Too easy, {short}.", "And STAY down!", "W. Easy W.",
+                                           f"Better luck next time, {short}!"]))
+            self._grow("boldness", 0.006, f"I won a sparring match against {who.name}")
+        elif phase == "lose":
+            self.bubble_say(random.choice(["Ow! Okay, okay, you win this one.", f"Next time, {short}!",
+                                           "L... rematch later.", "I let you win. Obviously."]))
+            self._grow("playfulness", 0.004, f"I lost a sparring match to {who.name}")
+        elif phase in ("hit", "hurt") and random.random() < 0.25 and not self.bubble_busy():
+            self.bubble_say(random.choice(["Hah!", "Take that!", "Hyah!"] if phase == "hit"
+                                          else ["Oof!", "Hey!", "Cheap shot!"]), log=False)
 
     # -- growing up ---------------------------------------------------------------------------------
 

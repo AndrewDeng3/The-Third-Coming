@@ -37,7 +37,9 @@ from stickfigure.figure.controller import Figure
 from stickfigure.overlay.block_window import BlockViews
 from stickfigure.overlay.debug_overlay import DebugOverlay
 from stickfigure.overlay.figure_window import FigureWindow
+from stickfigure.figure.rival import Rival
 from stickfigure.overlay.highlight import Highlight
+from stickfigure.overlay.rival_window import RivalWindow
 from stickfigure.perception.perception import Perception, Target, choose_target
 from stickfigure.perception.uia import UIAReader
 from stickfigure.overlay.render import COLORS, draw_figure
@@ -118,6 +120,9 @@ class StickFigureApp:
             log.info("restored %d permanent blocks", restored)
         self.brain = Brain(self.fig, self.world, self.blocks, self.emotion)
         self.brain.trait = self.growth.weight
+        self.brain.make_rival = self._make_rival
+        self.brain.user_idle = win32.user_idle_seconds
+        self.rivals: list[tuple[Rival, RivalWindow]] = []
         self.companion = Companion(
             self.fig, self.brain, self.anim, self.world, self.agent, self.memory, self.emotion, self._surface_name
         )
@@ -134,6 +139,7 @@ class StickFigureApp:
         self.fig_window = FigureWindow(self.anim, lambda: self.menu.popup(QCursor.pos()), self.open_chat)
         self.bubble = SpeechBubble(round(15 * self.ui_scale), round(300 * self.ui_scale))
         self.chat = ChatWindow(self.agent.name, self.ui_scale)
+        self.chat.setWindowIcon(_app_icon(self.anim))  # (Windows otherwise shows Python's icon)
         self.chat.submitted.connect(lambda text: asyncio.ensure_future(self._on_chat(text)))
         self.chat.moved.connect(self.tracker.mark_dirty)  # our own windows don't fire WinEvents
         self.debug = DebugOverlay(self.world, self._stats, lambda: self.brain.debug_path)
@@ -285,7 +291,7 @@ class StickFigureApp:
         for label, action in (("Sit down", "sit"), ("Wave", "wave"), ("Dance", "dance"),
                               ("Climb to highest window", "climb"), ("Take a nap", "sleep"),
                               ("Ride my cursor", "ride"), ("Follow my cursor", "follow"), ("Backflip", "flip"),
-                              ("Chase my cursor", "chase")):
+                              ("Chase my cursor", "chase"), ("Spar with a legend", "fight")):
             a = QAction(label, do)
             a.triggered.connect(lambda _=False, act=action: self.brain.command(act))
             do.addAction(a)
@@ -383,6 +389,26 @@ class StickFigureApp:
             for obj, attr in ((self.mischief, "_next_at"), (self.adventure, "_next_at"),
                               (self.companion, "_next_think")):
                 setattr(obj, attr, min(getattr(obj, attr), now + (getattr(obj, attr) - now) * old / t))
+
+    def _make_rival(self, who, x: float, floor_y: float, facing: int) -> "Rival | None":
+        if self.rivals or self._in_lounge or self._hidden_for_fullscreen:
+            return None
+        rival = Rival(who, x, floor_y, facing)
+        window = RivalWindow(rival, self.ui_scale)
+        window.show()
+        self.tracker.ignore(window.winId())  # not a platform
+        self.rivals.append((rival, window))
+        log.info("sparring with %s", who.name)
+        return rival
+
+    def _update_rivals(self, dt: float) -> None:
+        for rival, window in list(self.rivals):
+            rival.update(dt)
+            window.sync()
+            if rival.done:
+                window.close()
+                window.deleteLater()
+                self.rivals.remove((rival, window))
 
     def _mind_lounge(self) -> bool:
         if not self.chat.isVisible() or self._in_lounge:
@@ -1019,6 +1045,7 @@ class StickFigureApp:
                 self._maybe_enter_lounge()
             self.companion.update(dt)
             self.blocks.update(dt, self.world.surface_for_shape(self.fig.ground_shape))
+            self._update_rivals(dt)
             self.block_views.update(dt)
             self.anim.talk = self.speaker.level
             self.anim.update(dt)
@@ -1065,7 +1092,7 @@ class StickFigureApp:
             f"frame {self._frame_ms:5.2f} ms   physics {self._step_ms:5.2f} ms",
             f"tracker refresh {self.tracker.refresh_ms:5.2f} ms",
             f"windows {len(self.tracker.snapshot.windows)}   platforms {len(self.world.platforms)}   blocks {len(self.world.blocks)}",
-            f"anim {self.anim.state.name}   task {self.brain.task_name}",
+            f"anim {getattr(self.anim.state, 'name', self.anim.state)}   task {self.brain.task_name}",
             f"mood {e.label()}  E{e.energy:.2f} C{e.curiosity:.2f} A{e.affection:.2f} N{e.annoyance:.2f}",
             f"pos ({f.body.position.x:.0f}, {f.body.position.y:.0f})   vel ({f.body.velocity.x:.0f}, {f.body.velocity.y:.0f})",
             f"on {self.world.surface_for_shape(f.ground_shape)}",
@@ -1092,6 +1119,12 @@ def _setup_logging() -> None:
 
 def main() -> int:
     _setup_logging()
+    try:  # its own taskbar identity, so Windows uses The Third Coming's icon instead of Python's
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("TechWA1.TheThirdComing")
+    except (AttributeError, OSError):
+        pass
     qapp = QApplication(sys.argv)
     qapp.setQuitOnLastWindowClosed(False)
     qapp.setApplicationName("The Third Coming")

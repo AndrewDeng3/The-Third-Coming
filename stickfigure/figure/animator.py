@@ -84,6 +84,9 @@ class Animator:
             if f.air_time > 0.45 and f.body.velocity.y > 600:
                 return Anim.FALL
             return Anim.AIR
+        mode = getattr(f, "pose_mode", None)
+        if mode:
+            return mode  # a named pose (see _pose_*), e.g. fight moves
         act = {
             Activity.PREP: Anim.PREP, Activity.SIT: Anim.SIT, Activity.SLEEP: Anim.SLEEP,
             Activity.PLACE: Anim.PLACE, Activity.WAVE: Anim.WAVE, Activity.POINT: Anim.POINT,
@@ -135,8 +138,10 @@ class Animator:
         self.pose = self._secondary(target, STIFFNESS.get(state, 1.0), dt)
         return self.pose
 
-    def _target(self, state: Anim) -> Pose:
+    def _target(self, state) -> Pose:
         f = self.fig
+        if isinstance(state, str):  # a named pose
+            return mirror(getattr(self, f"_pose_{state}", self._idle)(), f.facing)
         builders = {
             Anim.IDLE: self._idle,
             Anim.WALK: lambda: self._gait(run=False),
@@ -435,6 +440,70 @@ class Animator:
             (grip[0] - 0.02 * H, grip[1]), (grip[0] + 0.02 * H, grip[1]),
             hands_abs=True, elbow=-1.0, elbow_f=1.0,
         )
+
+    # -- fighting (Animator vs. Animation style) ------------------------------------------------------------
+
+    def _fight_base(self, crouch: float = 0.0, lean: float = 0.12) -> tuple:
+        H, half = self.P.height, self.P.half
+        bounce = abs(math.sin(self.time * 7.0)) * 0.012 * H
+        return (0.0, half - (0.88 - 0.12 * crouch) * self._leg + bounce), lean
+
+    def _pose_stance(self) -> Pose:
+        """Fists up, knees bent, bouncing on the balls of its feet."""
+        H, half = self.P.height, self.P.half
+        pelvis, lean = self._fight_base(0.3)
+        return self._assemble(pelvis, lean, (-0.14 * H, half), (0.13 * H, half),
+                              (0.08 * H, 0.02 * H), (0.15 * H, -0.03 * H), elbow=-1.0, elbow_f=-1.0)
+
+    def _pose_punch(self) -> Pose:
+        H, half = self.P.height, self.P.half
+        k = smoothstep(min(1.0, self.state_time / 0.08))
+        pelvis, _ = self._fight_base(0.2)
+        pelvis = (pelvis[0] + 0.05 * H * k, pelvis[1])
+        return self._assemble(pelvis, 0.12 + 0.18 * k, (-0.16 * H, half), (0.2 * H, half),
+                              (0.06 * H, 0.03 * H), (0.15 * H + 0.2 * H * k, -0.03 * H), elbow=-1.0, elbow_f=-1.0)
+
+    def _pose_kick(self) -> Pose:
+        H, half = self.P.height, self.P.half
+        k = smoothstep(min(1.0, self.state_time / 0.1))
+        pelvis = (-0.03 * H, half - 0.94 * self._leg)
+        return self._assemble(pelvis, -0.22 * k, (-0.05 * H, half),
+                              (0.1 * H + 0.3 * H * k, half - 0.5 * H * k),
+                              (-0.2 * H, -0.02 * H), (0.1 * H, 0.05 * H), knee=-1.0)
+
+    def _pose_uppercut(self) -> Pose:
+        H, half = self.P.height, self.P.half
+        k = smoothstep(min(1.0, self.state_time / 0.12))
+        pelvis = (0.04 * H * k, half - (0.78 + 0.18 * k) * self._leg)
+        return self._assemble(pelvis, 0.3 - 0.35 * k, (-0.14 * H, half), (0.14 * H, half - 0.05 * H * k),
+                              (0.05 * H, 0.05 * H), (0.12 * H + 0.06 * H * k, 0.08 * H - 0.45 * H * k),
+                              elbow=-1.0, elbow_f=-1.0)
+
+    def _pose_block(self) -> Pose:
+        H, half = self.P.height, self.P.half
+        pelvis, _ = self._fight_base(0.5)
+        return self._assemble(pelvis, 0.02, (-0.15 * H, half), (0.12 * H, half),
+                              (0.12 * H, -0.1 * H), (0.14 * H, 0.0), elbow=-1.0, elbow_f=-1.0)
+
+    def _pose_hurt(self) -> Pose:
+        H, half = self.P.height, self.P.half
+        k = smoothstep(min(1.0, self.state_time / 0.1))
+        pelvis = (-0.03 * H * k, half - 0.9 * self._leg)
+        return self._assemble(pelvis, -0.4 * k, (-0.12 * H, half), (0.08 * H, half),
+                              (-0.18 * H, -0.12 * H), (-0.1 * H, -0.18 * H))
+
+    def _pose_taunt(self) -> Pose:
+        """'Come on!' - beckoning with the front hand."""
+        H, half = self.P.height, self.P.half
+        wag = math.sin(self.state_time * 12) * 0.05 * H
+        return self._assemble((0.0, half - 0.95 * self._leg), -0.08, (-0.08 * H, half), (0.1 * H, half),
+                              (-0.1 * H, 0.25 * H), (0.22 * H, -0.08 * H + wag), elbow=1.0, elbow_f=-1.0)
+
+    def _pose_victory(self) -> Pose:
+        H, half = self.P.height, self.P.half
+        b = abs(math.sin(self.state_time * 8)) * 0.02 * H
+        return self._assemble((0.0, half - 0.95 * self._leg - b), -0.05, (-0.1 * H, half), (0.1 * H, half),
+                              (-0.12 * H, -self._arm * 0.9), (0.14 * H, -self._arm * 0.92))
 
     def _knocked(self) -> Pose:
         H, half = self.P.height, self.P.half

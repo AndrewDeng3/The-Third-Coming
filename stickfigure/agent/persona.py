@@ -11,7 +11,7 @@ from stickfigure.agent.lore import LORE, SHORT_LORE
 from stickfigure.agent.memory import Fact
 
 ACTIONS = ("sit", "wave", "hop", "climb", "come", "dance", "sleep", "build", "demolish", "ride", "flip", "chase",
-           "follow")
+           "follow", "fight")
 _TAG = re.compile(r"\[(\w+)\]")
 
 
@@ -89,6 +89,8 @@ You can move your own body. If it fits the moment, end your reply with exactly o
 [build] (build a little structure out of blocks on the taskbar) [demolish] (knock down one of your structures)
 [ride] (jump up and hang onto the user's mouse cursor for a ride) [flip] (do a backflip) [chase] (sprint after the cursor)
 [follow] (follow the user's cursor around the screen for a minute)
+[fight] (a sparring match with one of the legends: the Chosen One, the Dark Lord, the Second Coming, King Orange,
+or the Color Gang)
 Most replies need no tag.
 
 Right now:
@@ -238,7 +240,8 @@ sit = sit down, wave = wave, hop = jump, climb = climb to the highest window, co
 dance = dance, sleep = take a nap, build = build something out of blocks, demolish = knock down / clear away
 one of the things it built, ride = grab onto / latch onto / hang from the user's mouse cursor, flip = do a
 backflip or a trick, chase = chase / catch the cursor, follow = follow the user's mouse/cursor around
-(keep following it), come = walk over to the user once."""
+(keep following it), come = walk over to the user once, fight = fight / spar / battle one of the stick
+figure legends (Chosen One, Dark Lord, Second Coming, King Orange, Red, Blue, Green, Yellow, Purple)."""
 
 
 def extraction_messages(user_text: str, reply: str, known: list[Fact]) -> list[dict]:
@@ -379,7 +382,7 @@ def clean_reply(text: str) -> str:
 
 MIND_ACTIONS = ("nothing", "go_to", "wander", "climb_element", "reach_cursor", "follow_cursor", "ride_cursor",
                 "chase_cursor", "flip", "dance", "climb", "build", "sit", "nap", "look_up_something", "peek_tabs",
-                "look_at_screen", "chat", "lounge")
+                "look_at_screen", "chat", "lounge", "spar")
 MIND_SCHEMA = {
     "type": "object",
     "properties": {
@@ -406,7 +409,8 @@ def mind_messages(name: str, emotion: Emotion, situation: Situation, context: di
             "Actions: go_to (travel to one of the numbered places below: set target to its number; it jumps, "
             "or builds a block staircase if it's too high), climb_element (climb onto some text box/button), "
             "reach_cursor (build a tower up to the mouse pointer and grab it), wander (explore somewhere random), "
-            "follow_cursor, ride_cursor (hang from the pointer), "
+            "follow_cursor, ride_cursor (hang from the pointer), spar (a legend from the series warps in for a "
+            "sparring match - best while the user is away), "
             "chase_cursor, flip (backflip), dance, climb (to the highest window), build (a block structure), "
             "sit, nap (only if tired), look_up_something (google something fun in a new tab - only when the "
             "user is away), peek_tabs (flip through their browser tabs - only when away), look_at_screen "

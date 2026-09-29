@@ -78,6 +78,7 @@ class _Stub:
         self.activity = Activity.NONE
         self.activity_point = None
         self.facing = 1
+        self.pose_mode = None
 
 
 class LoungeAnimator(Animator):
