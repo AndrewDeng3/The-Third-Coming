@@ -39,6 +39,7 @@ from stickfigure.overlay.debug_overlay import DebugOverlay
 from stickfigure.overlay.figure_window import FigureWindow
 from stickfigure.figure.rival import Rival
 from stickfigure.overlay.highlight import Highlight
+from stickfigure.overlay.effects_window import EffectsWindow
 from stickfigure.overlay.rival_window import RivalWindow
 from stickfigure.perception.perception import Perception, Target, choose_target
 from stickfigure.perception.uia import UIAReader
@@ -123,6 +124,7 @@ class StickFigureApp:
         self.brain.make_rival = self._make_rival
         self.brain.user_idle = win32.user_idle_seconds
         self.rivals: list[tuple[Rival, RivalWindow]] = []
+        self.effects_window = EffectsWindow(self.brain.fx)
         self.companion = Companion(
             self.fig, self.brain, self.anim, self.world, self.agent, self.memory, self.emotion, self._surface_name
         )
@@ -402,6 +404,21 @@ class StickFigureApp:
         return rival
 
     def _update_rivals(self, dt: float) -> None:
+        fx = self.brain.fx
+        fx.update(dt)
+        if fx.active or self.rivals:
+            x, y = self.fig.body.position
+            mon = next((m.bounds for m in self.world.monitors if m.bounds.left <= x < m.bounds.right),
+                       self.world.monitors[0].bounds)
+            self.effects_window.cover(mon)
+            if not self.effects_window.isVisible():
+                self.effects_window.show()
+                self.tracker.ignore(self.effects_window.winId())
+            if self.effects_window.hwnd:
+                win32.bring_to_top(self.effects_window.hwnd)
+            self.effects_window.update()
+        elif self.effects_window.isVisible():
+            self.effects_window.hide()
         for rival, window in list(self.rivals):
             rival.update(dt)
             window.sync()

@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QWidget
 
 from stickfigure.config import CONFIG, Config
 from stickfigure.figure.rival import Rival
-from stickfigure.overlay.render import draw_figure
+from stickfigure.overlay.render import draw_figure, draw_weapon
 from stickfigure.win import win32
 
 
@@ -83,6 +83,8 @@ class RivalWindow(QWidget):
             p.drawPath(cape)
 
         draw_figure(p, pose, (cx, cy), P, self.color, self.cfg.stroke)
+        if r.weapon:
+            draw_weapon(p, pose, (cx, cy), P, r.weapon, QColor(*r.who.accent) if r.who.accent else None)
 
         # Crown
         if r.who.extra == "crown":

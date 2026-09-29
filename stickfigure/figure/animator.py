@@ -79,6 +79,9 @@ class Animator:
         if f.knocked > 0:
             return Anim.KNOCKED
         if not f.grounded:
+            air = getattr(f, "air_pose", None)
+            if air:
+                return air  # a named air pose (flying kick, somersault tuck...)
             if f.tumbling:
                 return Anim.TUMBLE
             if f.air_time > 0.45 and f.body.velocity.y > 600:
@@ -141,7 +144,8 @@ class Animator:
     def _target(self, state) -> Pose:
         f = self.fig
         if isinstance(state, str):  # a named pose
-            return mirror(getattr(self, f"_pose_{state}", self._idle)(), f.facing)
+            pose = mirror(getattr(self, f"_pose_{state}", self._idle)(), f.facing)
+            return rotate(pose, f.tumble_angle) if f.tumbling else pose  # e.g. a somersault
         builders = {
             Anim.IDLE: self._idle,
             Anim.WALK: lambda: self._gait(run=False),
@@ -504,6 +508,68 @@ class Animator:
         b = abs(math.sin(self.state_time * 8)) * 0.02 * H
         return self._assemble((0.0, half - 0.95 * self._leg - b), -0.05, (-0.1 * H, half), (0.1 * H, half),
                               (-0.12 * H, -self._arm * 0.9), (0.14 * H, -self._arm * 0.92))
+
+    # weapons ------------------------------------------------------------------------------------------------
+
+    def _pose_guard(self) -> Pose:
+        """Weapon stance: weapon hand forward and up, the other back."""
+        H, half = self.P.height, self.P.half
+        pelvis, lean = self._fight_base(0.35)
+        return self._assemble(pelvis, lean, (-0.15 * H, half), (0.13 * H, half),
+                              (0.04 * H, 0.06 * H), (0.17 * H, -0.08 * H), elbow=-1.0, elbow_f=-1.0)
+
+    def _pose_slash(self) -> Pose:
+        """Overhead swing coming down in front."""
+        H, half = self.P.height, self.P.half
+        k = smoothstep(min(1.0, self.state_time / 0.14))
+        pelvis, _ = self._fight_base(0.3)
+        hand = (0.02 * H + 0.3 * H * k, -0.34 * H + 0.38 * H * k)
+        return self._assemble((pelvis[0] + 0.04 * H * k, pelvis[1]), 0.05 + 0.22 * k, (-0.16 * H, half),
+                              (0.18 * H, half), (0.04 * H, 0.06 * H), hand, elbow=-1.0, elbow_f=-1.0)
+
+    def _pose_thrust(self) -> Pose:
+        """A straight poke (spear/staff style): both hands forward."""
+        H, half = self.P.height, self.P.half
+        k = smoothstep(min(1.0, self.state_time / 0.1))
+        pelvis, _ = self._fight_base(0.25)
+        return self._assemble((pelvis[0] + 0.06 * H * k, pelvis[1]), 0.15 + 0.15 * k, (-0.17 * H, half),
+                              (0.2 * H, half), (0.08 * H + 0.1 * H * k, 0.0), (0.18 * H + 0.14 * H * k, -0.03 * H),
+                              elbow=-1.0, elbow_f=-1.0)
+
+    def _pose_sweep(self) -> Pose:
+        """Low spinning leg sweep along the floor."""
+        H, half = self.P.height, self.P.half
+        k = smoothstep(min(1.0, self.state_time / 0.12))
+        pelvis = (0.0, half - 0.55 * self._leg)
+        return self._assemble(pelvis, 0.35, (-0.1 * H, half), (0.2 * H + 0.2 * H * k, half),
+                              (-0.05 * H, 0.25 * H), (0.1 * H, 0.2 * H), knee=-1.0)
+
+    def _pose_cast(self) -> Pose:
+        """Magic: both palms thrust forward."""
+        H, half = self.P.height, self.P.half
+        k = smoothstep(min(1.0, self.state_time / 0.12))
+        pelvis, _ = self._fight_base(0.35)
+        return self._assemble(pelvis, 0.1 + 0.1 * k, (-0.18 * H, half), (0.16 * H, half),
+                              (0.12 * H + 0.12 * H * k, 0.03 * H), (0.14 * H + 0.16 * H * k, -0.04 * H),
+                              elbow=-1.0, elbow_f=-1.0)
+
+    # in the air -----------------------------------------------------------------------------------------------
+
+    def _pose_flykick(self) -> Pose:
+        H, half = self.P.height, self.P.half
+        return self._assemble((-0.02 * H, half - 0.9 * self._leg), -0.18, (-0.06 * H, half - 0.25 * H),
+                              (0.42 * H, half - 0.14 * H), (-0.2 * H, -0.05 * H), (0.05 * H, 0.1 * H))
+
+    def _pose_divepunch(self) -> Pose:
+        H, half = self.P.height, self.P.half
+        return self._assemble((0.0, half - 0.9 * self._leg), 0.5, (-0.25 * H, half - 0.05 * H),
+                              (-0.12 * H, half - 0.1 * H), (0.05 * H, 0.1 * H), (0.33 * H, 0.05 * H))
+
+    def _pose_tuck(self) -> Pose:
+        """Knees to chest: a somersault."""
+        H, half = self.P.height, self.P.half
+        return self._assemble((0.0, half - 0.7 * self._leg), 0.5, (0.08 * H, half - 0.28 * H),
+                              (0.12 * H, half - 0.25 * H), (0.12 * H, 0.18 * H), (0.16 * H, 0.16 * H))
 
     def _knocked(self) -> Pose:
         H, half = self.P.height, self.P.half
