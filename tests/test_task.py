@@ -178,7 +178,7 @@ def test_approve_all_skips_routine_asks_but_not_destructive(tmp_path):
     m = ScriptedModel([])
     task, _, ex, asked, _ = make_task(tmp_path, [
         {"action": "click", "element_id": m.id_of(BOLD)},
-        {"action": "click", "element_id": m.id_of(BOLD)},
+        {"action": "click", "element_id": m.id_of(BODY)},
         {"action": "click", "element_id": m.id_of(DELETE)},
         {"action": "done"},
     ], approvals=["approve_all", "deny"])
@@ -283,7 +283,7 @@ def test_refuses_to_type_the_same_text_twice_and_sees_the_document(tmp_path):
     assert FakeUIA.doc == text  # typed exactly once
     assert "(empty)" in seen[0]  # the model saw the document was empty...
     assert "This is a new message." in seen[1] and "verified" in seen[1]  # ...then saw its text land
-    assert any("already typed exactly this" in s for s in r.steps)
+    assert r.message.startswith("Done")  # trying to type it again just means it's finished
 
 
 def test_step_budget(tmp_path):
@@ -294,15 +294,15 @@ def test_step_budget(tmp_path):
     assert run(task).status == "limit"
 
 
-def test_stops_repeating_the_same_step_forever(tmp_path):
-    """The Google Docs failure: 'click the document' 19 times, never typing."""
+def test_a_repeated_step_is_skipped_not_run_twice(tmp_path):
+    """The Google Docs loop ('click the document' over and over): repeats are ignored and the task carries on."""
     m = ScriptedModel([])
-    task, _, ex, _, _ = make_task(tmp_path, [{"action": "click", "element_id": m.id_of(BODY)}] * 30,
-                                  supervised=False)
+    task, _, ex, _, _ = make_task(tmp_path, [{"action": "click", "element_id": m.id_of(BODY)}] * 5
+                                  + [{"action": "done"}], supervised=False)
     r = run(task)
-    assert r.status == "failed" and "repeating" in r.message
-    assert len(ex.ran) == 2  # ran twice, then refused to keep going in circles
-    assert any("already ran 2 times" in s for s in r.steps)
+    assert r.status == "done"
+    assert len(ex.ran) == 1  # clicked once; the four repeats were skipped
+    assert sum("SKIPPED" in s for s in r.steps) == 4
 
 
 def test_types_the_prepared_text_not_its_own_version(tmp_path):
@@ -332,3 +332,77 @@ def test_prepared_text_is_never_typed_twice_in_one_step(tmp_path):
     r = run(task)
     assert r.status == "done" and FakeUIA.doc == intro
     assert any("only ONCE" in s for s in r.steps)
+
+
+def test_same_target_rules():
+    from stickfigure.actions.task import same_target
+    from stickfigure.perception.uia import UIElement
+
+    btn = UIElement("Share", "Button", Rect(100, 100, 200, 140))
+    assert same_target(UIElement("Share", "Text", Rect(120, 110, 180, 130)), btn)  # its label inside it
+    assert same_target(UIElement("share", "Button", Rect(90, 95, 210, 145)), btn)  # same name, bigger box
+    assert not same_target(UIElement("Ad banner", "Image", Rect(0, 0, 800, 600)), btn)  # an overlay on top
+    assert not same_target(UIElement("Comment", "Button", Rect(210, 100, 300, 140)), btn)  # the neighbor
+
+
+def test_near_duplicate_text_is_not_typed_again():
+    from stickfigure.actions.task import nearly_same_text
+
+    a = "Hey Manna, just checking in! I've been exploring the computer, building block staircases, and ri"
+    assert nearly_same_text(a, a[:-1])  # 97 vs 96 chars: the real-world double paste
+    assert nearly_same_text(a, a + " ")
+    assert not nearly_same_text(a, "Totally different message about octopuses and their colors")
+
+
+def test_document_writing_goes_at_the_end_on_its_own_line(tmp_path):
+    """Real bug: a click to 'place the caret' landed mid-document and the reply was typed into someone's text."""
+    m = ScriptedModel([])
+    FakeUIA.doc = "Hi from Manna"
+    task, _, ex, _, _ = make_task(tmp_path, [
+        {"action": "click", "element_id": m.id_of(BODY)},
+        {"action": "type_text", "element_id": m.id_of(BODY), "text": "Hello back!"},
+        {"action": "done"},
+    ], supervised=False)
+    r = run(task)
+    assert r.status == "done"
+    typed = [s for batch in ex.ran for s in batch]
+    kinds = [type(s).__name__ for s in typed]
+    i = kinds.index("Type")
+    assert type(typed[i - 1]).__name__ == "Keys" and typed[i - 1].combo == "ctrl+end"  # jump to the end first
+    assert typed[i].text == "\nHello back!"  # on its own line
+    assert "Click" not in kinds[kinds.index("Keys"):]  # no click right before typing
+
+
+def test_a_named_place_is_respected(tmp_path):
+    m = ScriptedModel([])
+    task, _, ex, _, _ = make_task(tmp_path, [
+        {"action": "type_text", "element_id": m.id_of(BODY), "text": "Title"},
+        {"action": "done"},
+    ], supervised=False)
+    task.goal = "type Title at the top of the document"
+    run(task)
+    assert not any(type(s).__name__ == "Keys" for batch in ex.ran for s in batch)
+
+
+def test_task_ends_as_soon_as_the_prepared_text_is_in(tmp_path):
+    """Real bug: after pasting, it just kept going (more steps, repeats...)."""
+    m = ScriptedModel([])
+    msg = "yo Manna, what are you working on rn?"
+    task, _, ex, _, _ = make_task(tmp_path, [
+        {"action": "type_text", "element_id": m.id_of(BODY), "text": "{{TEXT}}"},
+        {"action": "click", "element_id": m.id_of(BOLD)},  # would have kept going
+        {"action": "type_text", "element_id": m.id_of(BODY), "text": "{{TEXT}}"},
+    ], payload=msg, supervised=False)
+    r = run(task)
+    assert r.status == "done" and len(ex.ran) == 1
+
+
+def test_trying_to_type_the_same_thing_again_means_done(tmp_path):
+    m = ScriptedModel([])
+    task, _, ex, _, _ = make_task(tmp_path, [
+        {"action": "type_text", "element_id": m.id_of(BODY), "text": "hey whats up"},
+        {"action": "type_text", "element_id": m.id_of(BODY), "text": "hey whats up!"},
+        {"action": "click", "element_id": m.id_of(BOLD)},
+    ], supervised=False)
+    r = run(task)
+    assert r.status == "done" and len(ex.ran) == 1

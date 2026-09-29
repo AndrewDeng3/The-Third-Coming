@@ -22,7 +22,7 @@ from stickfigure.actions.executor import Executor, Move, Pause, Wheel
 from stickfigure.actions.input_driver import cursor_pos
 from stickfigure.actions.task import clickable_point
 from stickfigure.agent.emotion import Emotion
-from stickfigure.config import CONFIG, Config
+from stickfigure.config import CONFIG, Config, temp_scale
 from stickfigure.perception.perception import Perception, Target
 from stickfigure.safety.audit import AuditLog
 from stickfigure.safety.override import InputWatch
@@ -51,6 +51,7 @@ class Mischief:
                                 lambda: self.executor.cancel("emergency stop"),
                                 triggers=("esc", "click", "any_key", "mouse_move"))
         self.running = False
+        self.temperature = cfg.temperature
         self._next_at = time.monotonic() + random.uniform(*cfg.mischief_gap) / 2
         # Hooks set by the app
         self.can_play: Callable[[], bool] = lambda: True  # e.g. no task running, not fullscreen
@@ -66,7 +67,7 @@ class Mischief:
         now = time.monotonic()
         if not self.enabled or self.running or now < self._next_at:
             return
-        self._next_at = now + random.uniform(*self.cfg.mischief_gap)
+        self._next_at = now + random.uniform(*self.cfg.mischief_gap) * temp_scale(self.temperature)
         e = self.emotion
         playful = (e.happiness > 0.45 or e.curiosity > 0.6) and e.energy > 0.3 and e.annoyance < 0.4
         if not playful or win32.user_idle_seconds() < self.cfg.mischief_idle or not self.can_play():

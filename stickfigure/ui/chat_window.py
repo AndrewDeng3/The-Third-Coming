@@ -230,7 +230,7 @@ class ChatWindow(QWidget):
     # -- transcript -----------------------------------------------------------------------
 
     def load_history(self, messages: list[dict]) -> None:
-        self._msgs = [_Msg(m["role"], m["content"]) for m in messages if m["role"] in ("user", "assistant")]
+        self._msgs = [_Msg(m["role"], m["content"]) for m in messages if m["role"] in ("user", "assistant", "aside")]
         self._render()
 
     def add_user(self, text: str) -> None:
@@ -274,6 +274,13 @@ class ChatWindow(QWidget):
             self.lounge.talk_reply(text, pending=False)
         self._render()
 
+    def add_aside(self, text: str) -> None:
+        """A remark made outside the conversation (reactions, thoughts said out loud)."""
+        if self._msgs and self._msgs[-1].role == "aside" and self._msgs[-1].text == text:
+            return  # don't repeat the same exclamation back to back
+        self._msgs.append(_Msg("aside", text))
+        self._render()
+
     def set_busy(self, busy: bool) -> None:
         self.send.setEnabled(not busy)
 
@@ -293,6 +300,10 @@ class ChatWindow(QWidget):
         pad = round(8 * self.s)
         rows = []
         for m in self._msgs[-80:]:
+            if m.role == "aside":  # something it said on its own (a reaction, a passing thought)
+                rows.append(f'<p style="color:#c9a27a; font-size:9pt; font-style:italic; margin:2px 4px;">'
+                            f'{html.escape(self.name)}: {html.escape(m.text)}</p>')
+                continue
             if m.role == "note":
                 text = html.escape(m.text).replace("\n", "<br>")
                 rows.append(f'<p align="center" style="color:{NOTE_FG}; font-size:9pt;">{text}</p>')
@@ -342,9 +353,14 @@ class ChatWindow(QWidget):
         self.submitted.emit(text)
 
     def open_near(self, x: int, y: int, screen_rect) -> None:
-        w, h = self.width(), self.height()
-        left, top, right, bottom = screen_rect
-        self.move(round(min(max(x - w // 2, left + 8), right - w - 8)), round(min(max(y - h - 40, top + 8), bottom - h - 8)))
+        """Show the chat. Only the very first time is it placed near the figure; after that it stays wherever the
+        user left it (opening Settings, a question, a task... never moves it)."""
+        if not getattr(self, "_placed", False):
+            w, h = self.width(), self.height()
+            left, top, right, bottom = screen_rect
+            self.move(round(min(max(x - w // 2, left + 8), right - w - 8)),
+                      round(min(max(y - h - 40, top + 8), bottom - h - 8)))
+            self._placed = True
         self.show()
         self.raise_()
         self.activateWindow()

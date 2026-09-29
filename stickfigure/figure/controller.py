@@ -52,6 +52,7 @@ class Figure:
         self.events: list[tuple] = []
         self.activity = Activity.NONE
         self.activity_point: tuple[float, float] | None = None  # world point for PLACE/WAVE
+        self.pose_mode: str | None = None  # a named pose while grounded (fight moves: "punch", "block"...)
 
         self.grounded = False
         self.ground_shape: pymunk.Shape | None = None
@@ -63,6 +64,7 @@ class Figure:
         self._last_vy = 0.0
 
         self.grabbed = False
+        self.flung = False  # this fall started with the user throwing it (only those can knock it over)
         self.riding = False  # hanging from the mouse cursor by choice (not being dragged)
         self._grab_offset = (0.0, 0.0)
         self._cursor_samples: deque[tuple[float, float, float]] = deque(maxlen=12)
@@ -172,6 +174,7 @@ class Figure:
         self.shape.filter = self._solid_filter
         vx, vy = self._throw_velocity() if fling else (0.0, 0.0)
         self.body.velocity = (vx, vy)
+        self.flung = fling
         self.grounded = False
         self._jump_grace = 0.05
         if fling and math.hypot(vx, vy) > self.cfg.tumble_threshold:
@@ -195,6 +198,7 @@ class Figure:
         self.body.velocity = (vx, vy)
         self.grounded = False
         self._jump_grace = 0.05
+        self.flung = True  # dropped or thrown by the user: a hard landing can knock it over
         if abs(vx) > 50:
             self.facing = 1 if vx > 0 else -1
         speed = math.hypot(vx, vy)
@@ -277,8 +281,17 @@ class Figure:
     def _on_land(self, impact: float) -> None:
         self.jumping = False
         self.last_impact = impact
-        self.land_timer = 0.16 if impact > 350 else 0.0
+        flung, self.flung = self.flung, False
         tilted = abs(math.remainder(self.tumble_angle, math.tau)) > 0.7
+        if not flung:
+            # Its own jumps, drops and backflips: always land on its feet, absorbing a big drop in a deeper,
+            # longer crouch (superhero landing) instead of face-planting.
+            self.land_timer = 0.0 if impact <= 350 else min(0.45, 0.16 + impact / 5000)
+            if impact > 900:
+                self.events.append(("landed", impact))
+            self.tumble_spin = self.tumble_angle = 0.0
+            return
+        self.land_timer = 0.16 if impact > 350 else 0.0
         if impact > self.cfg.knockdown_impact or (self.tumbling and (tilted or impact > 700)):
             self.knocked = self.cfg.knocked_time
             self.knocked_side = 1 if math.remainder(self.tumble_angle, math.tau) >= 0 else -1

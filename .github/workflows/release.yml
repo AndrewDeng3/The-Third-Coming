@@ -1,0 +1,74 @@
+# Builds and publishes the installer automatically.
+#
+# Every push to main (e.g. merging a pull request) runs the tests, builds TheThirdComing-Setup.exe on a
+# Windows runner, and publishes it as a new GitHub Release marked "latest".
+# Version = <packaging/VERSION>.<build number>, e.g. 1.1.7. Bump packaging/VERSION for a bigger jump.
+# It can also be started by hand from the Actions tab ("Run workflow").
+
+name: Build installer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # to create the release
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      QT_QPA_PLATFORM: offscreen  # no display on the build machine
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Work out the version
+        id: version
+        shell: pwsh
+        run: |
+          $base = (Get-Content packaging/VERSION -Raw).Trim()
+          $version = "$base.${{ github.run_number }}"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Version $version"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python -m pip install --upgrade pip
+          .\.venv\Scripts\python -m pip install -r requirements.txt
+
+      - name: Make sure Inno Setup is available
+        shell: pwsh
+        run: |
+          $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { choco install innosetup --no-progress -y }
+
+      - name: Test, build the app, build the installer
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Version ${{ steps.version.outputs.version }}
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          gh release create "v$v" "dist/TheThirdComing-Setup.exe" `
+            --title "The Third Coming v$v" `
+            --generate-notes `
+            --latest `
+            --target "${{ github.sha }}"

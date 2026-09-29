@@ -59,6 +59,9 @@ class Agent:
         self.user_name = cfg.user_name
         # Body actions decided by the (smarter) extraction pass arrive after the reply finishes.
         self.on_action: Callable[[str], None] = lambda action: None
+        self.growth = None  # agent.growth.Growth: who it's becoming (set by the app)
+        self.on_sentiment: Callable[[float], None] = lambda s: None
+        self.awareness: Callable[[], str] = lambda: ""  # what the user is doing right now (set by the app)
 
     # -- public ---------------------------------------------------------------------------
 
@@ -176,7 +179,27 @@ class Agent:
     def _system(self, situation: Situation, facts: list[Fact], observation: str | None = None,
                 episodes: list[Fact] | None = None) -> str:
         return system_prompt(self.name, self.emotion, situation, facts, observation=observation,
-                             user_name=self.user_name, episodes=episodes)
+                             user_name=self.user_name, episodes=episodes,
+                             self_text=self.growth.describe() if self.growth is not None else "",
+                             aware=self.awareness())
+
+    async def reflect(self) -> bool:
+        """Look back on recent life and grow a little (journal notes, trait shifts). One model call."""
+        from stickfigure.agent.growth import REFLECT_SCHEMA
+
+        g = self.growth
+        if g is None or self.busy or self._lock.locked():
+            return False
+        msgs = g.reflect_messages(self.name, self.memory.recent_messages(30, asides=True),
+                                  [f.text for f in self.memory.recent_facts(8)])
+        try:
+            r = await self.ollama.chat_json(self.cfg.extract_model, msgs, REFLECT_SCHEMA, temperature=0.7)
+        except OllamaError as e:
+            log.info("reflection failed: %s", e)
+            return False
+        g.apply_reflection(r)
+        log.info("reflected: %s | traits %s", g.mood_of_late, g.short())
+        return True
 
     async def compose(self, request: str, current_text: str | None = None) -> str:
         """Write the actual content for a task ("write a snake game in python"): code or prose, verbatim,
@@ -210,7 +233,12 @@ class Agent:
             return None
         if r.get("action") not in MIND_ACTIONS:
             return None
-        return {"thought": str(r.get("thought", ""))[:200], "action": r["action"], "say": str(r.get("say", ""))[:100]}
+        try:
+            target = int(r.get("target", -1))
+        except (TypeError, ValueError):
+            target = -1
+        return {"thought": str(r.get("thought", ""))[:200], "action": r["action"], "target": target,
+                "say": str(r.get("say", ""))[:100]}
 
     async def learn(self, goal: str, app: str, status: str, message: str, steps: list[str]) -> str:
         """After a task: distill one reusable lesson and remember it (recalled for similar tasks later)."""
@@ -317,6 +345,7 @@ class Agent:
             log.warning("memory extraction failed: %s", e)
         finally:
             self.emotion.on_chat(sentiment)
+            self.on_sentiment(sentiment)
 
     def _spawn(self, coro) -> None:
         task = asyncio.ensure_future(coro)

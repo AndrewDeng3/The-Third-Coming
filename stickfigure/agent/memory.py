@@ -63,8 +63,11 @@ class Memory:
         self.db.execute("INSERT INTO messages(role, content, ts) VALUES (?, ?, ?)", (role, content, time.time()))
         self.db.commit()
 
-    def recent_messages(self, n: int) -> list[dict]:
-        rows = self.db.execute("SELECT role, content FROM messages ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+    def recent_messages(self, n: int, asides: bool = False) -> list[dict]:
+        """The last `n` chat turns. `asides` (off-the-cuff remarks it made on its own, role "aside") are shown
+        in the chat window but kept out of the model's conversation history."""
+        where = "" if asides else "WHERE role != 'aside'"
+        rows = self.db.execute(f"SELECT role, content FROM messages {where} ORDER BY id DESC LIMIT ?", (n,)).fetchall()
         return [{"role": r, "content": c} for r, c in reversed(rows)]
 
     def clear_messages(self) -> None:

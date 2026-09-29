@@ -42,8 +42,10 @@ class SpeechBubble(QWidget):
         self._tail_x = 0.0
         self._tail_down = True
         self.hwnd = 0
-        # Big enough for the largest bubble; unused area is transparent (and click-through anyway).
-        self.setFixedSize(max_width + 2 * self.pad + 8, round(font_px * 9) + self.tail + 2 * self.pad)
+        self.max_lines = 10
+        self._fit_cache: tuple[str, str, float, float] = ("", " ", 0.0, 0.0)
+        # The window is resized to each bubble (see _fit), so the tail always starts at the bubble's edge.
+        self.setFixedSize(max_width + 2 * self.pad + 8, round(font_px * 4) + self.tail + 2 * self.pad)
 
     # -- content ------------------------------------------------------------------------
 
@@ -106,6 +108,9 @@ class SpeechBubble(QWidget):
             self.hide()
             return
         w, h = self._bubble_size()
+        need_w, need_h = round(w) + 8, round(h) + self.tail + 8
+        if (need_w, need_h) != (self.width(), self.height()):
+            self.setFixedSize(need_w, need_h)
         hx, hy = head
         mon = next((m.work for m in monitors if m.work.left <= hx < m.work.right), monitors[0].work)
         # Prefer above the head; flip below if there's no room.
@@ -123,16 +128,44 @@ class SpeechBubble(QWidget):
 
     # -- painting ---------------------------------------------------------------------------------
 
-    def _layout_text(self) -> str:
+    def _raw_text(self) -> str:
         if self.thinking:
             return "." * (1 + int(time.monotonic() * 3) % 3)
         return self.text or " "
 
-    def _bubble_size(self) -> tuple[float, float]:
+    def _fit(self) -> tuple[str, float, float]:
+        """(text to draw, bubble width, bubble height): at most `max_lines` lines, cut with "…" if longer."""
+        raw = self._raw_text()
+        if self._fit_cache[0] == raw:
+            return self._fit_cache[1:]
         fm = QFontMetricsF(self.font_)
-        r = fm.boundingRect(QRectF(0, 0, self.max_width, 10_000), Qt.TextWordWrap, self._layout_text())
-        max_h = self.height() - self.tail - 8
-        return (max(r.width(), fm.horizontalAdvance("...")) + 2 * self.pad, min(r.height() + 2 * self.pad, max_h))
+        limit = self.max_lines * fm.lineSpacing() + 1
+
+        def measure(t: str) -> QRectF:
+            return fm.boundingRect(QRectF(0, 0, self.max_width, 100_000), Qt.TextWordWrap, t)
+
+        text, r = raw, measure(raw)
+        if r.height() > limit:  # binary-search the longest prefix that fits, then end it with an ellipsis
+            lo, hi = 0, len(raw)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if measure(raw[:mid].rstrip() + "…").height() <= limit:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            text = raw[:lo].rstrip() + "…"
+            r = measure(text)
+        w = max(r.width(), fm.horizontalAdvance("...")) + 2 * self.pad
+        h = r.height() + 2 * self.pad
+        self._fit_cache = (raw, text, w, h)
+        return text, w, h
+
+    def _layout_text(self) -> str:
+        return self._fit()[0]
+
+    def _bubble_size(self) -> tuple[float, float]:
+        _, w, h = self._fit()
+        return w, h
 
     def paintEvent(self, _event) -> None:
         p = QPainter(self)

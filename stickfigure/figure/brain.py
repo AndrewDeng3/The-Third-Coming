@@ -45,6 +45,11 @@ class Brain:
         self._since_wave = WAVE_COOLDOWN
         self._queued: tuple[str, Task] | None = None
         self._last_structure = time.monotonic()  # first unprompted build waits a while too
+        # Personality multiplier (Growth.weight): trait name, strength -> ~0.5..1.5. Neutral until wired up.
+        self.trait = lambda name, strength=1.0: 1.0
+        # Sparring: (character, x, floor_y, facing) -> Rival or None (set by the app, which draws it)
+        self.make_rival = lambda who, x, floor_y, facing: None
+        self.user_idle = lambda: 0.0  # seconds since the user touched mouse/keyboard
 
     # -- frame update ----------------------------------------------------------------
 
@@ -79,6 +84,7 @@ class Brain:
     def cancel(self) -> None:
         if self.task is not None:
             self.task.close()
+        self.fig.pose_mode = None
         if self.fig.riding:
             self.fig.stop_ride()
         self._finish()
@@ -116,6 +122,10 @@ class Brain:
             "demolish": self._demolish,
             "ride": self._ride_cursor,
             "follow": lambda: self._follow_cursor(random.uniform(45, 75)),
+            "climb_element": self._climb_element,
+            "reach_cursor": self._build_up_to_cursor,
+            "explore": self._travel_somewhere,
+            "fight": self._spar,
             "flip": self._flip,
             "chase": self._chase,
         }
@@ -161,18 +171,29 @@ class Brain:
             return
         e = self.emotion
         near_cursor = self._cursor_distance() < 300
+        T = self.trait
+        explorer, daring, goofy = T("wanderlust", 1.2), T("boldness", 1.2), T("playfulness", 1.2)
         options = [
-            (20 * (1.3 - e.energy), "idle", lambda: self._idle(random.uniform(1.5, 4.0))),
+            (20 * (1.3 - e.energy) * (2 - explorer), "idle", lambda: self._idle(random.uniform(1.5, 4.0))),
             (20, "stroll", self._stroll),
-            (12 * (1.5 - e.energy), "sit", lambda: self._sit(random.uniform(5, 12))),
-            (30 * (0.4 + e.energy) * (0.5 + e.curiosity), "travel", self._travel_somewhere),
+            (12 * (1.5 - e.energy) * (2 - explorer), "sit", lambda: self._sit(random.uniform(5, 12))),
+            (10 * (0.4 + e.energy) * (0.5 + e.curiosity) * explorer, "travel", self._travel_somewhere),
+            # Home is the ground: after a visit up high it heads back down to the taskbar.
+            (45 * (cur[0] != "floor") * (2 - explorer), "go_home", self._go_home),
             (7 * (0.3 + e.curiosity) * (e.energy > 0.4), "build", self._build_somewhere),
-            (12 * max(0.0, e.happiness - 0.6), "hop", lambda: self._hops(random.randint(1, 3))),
+            (12 * max(0.0, e.happiness - 0.6) * goofy, "hop", lambda: self._hops(random.randint(1, 3))),
             (10 * max(0.0, e.affection - 0.55), "come", self._come),
-            (5 * max(0.0, e.happiness - 0.4) * (e.energy > 0.45), "flip", self._flip),
-            (4 * (e.energy > 0.5) * (0.4 + e.curiosity) * near_cursor, "ride", self._ride_cursor),
-            (4 * (e.energy > 0.55) * max(0.0, e.happiness - 0.3), "chase", self._chase),
+            (5 * max(0.0, e.happiness - 0.4) * (e.energy > 0.45) * daring * goofy, "flip", self._flip),
+            (4 * (e.energy > 0.5) * (0.4 + e.curiosity) * near_cursor * daring, "ride", self._ride_cursor),
+            (4 * (e.energy > 0.55) * max(0.0, e.happiness - 0.3) * goofy, "chase", self._chase),
             (4 * max(0.0, e.affection - 0.4) * near_cursor, "follow", lambda: self._follow_cursor(random.uniform(15, 30))),
+            # An idle animation: a legend from the series warps in for a sparring match.
+            (4 * (e.energy > 0.45) * goofy * daring * (self.user_idle() > 20) * (cur[0] == "floor"), "spar",
+             self._spar),
+            (4 * (0.4 + e.curiosity) * (e.energy > 0.3) * bool(self.world.element_shapes) * explorer, "climb_element",
+             self._climb_element),
+            (3 * (e.energy > 0.5) * (0.3 + e.curiosity) * self._cursor_above_and_still() * daring, "reach_cursor",
+             self._build_up_to_cursor),
             (25 * (e.annoyance > 0.45 and near_cursor), "avoid", self._avoid),
             (400 * (e.energy < 0.2), "sleep", lambda: self._sleep(random.uniform(30, 90))),  # exhausted: nap
             (2 * (0.4 + e.curiosity) * (e.energy > 0.35) * (self.blocks.permanent_room >= 12)
@@ -187,6 +208,16 @@ class Brain:
             if r <= 0:
                 self._start(name, make())
                 return
+
+    def _go_home(self) -> Task:
+        """Back down to the taskbar below (dropping/jumping; never builds for this)."""
+        fx = self.fig.body.position.x
+        floors = [s for s in self.world.surfaces() if s.kind == "floor"]
+        home = min(floors, key=lambda s: 0 if s.world()[0] <= fx <= s.world()[1] else 1, default=None)
+        if home is None:
+            return False
+        lo, hi, _ = usable_span(home, self.cfg) or (fx, fx, 0)
+        return (yield from self._goto(home.key, min(max(fx, lo), hi) - home.body.position.x, build=False))
 
     def _travel_somewhere(self) -> Task:
         cur = self._current_key()
@@ -309,6 +340,9 @@ class Brain:
                 continue
             seg, x = spot
             fx = fig.body.position.x
+            if self._cursor_above_and_still() and self._cursor_still_for() > 2.5:
+                yield from self._build_up_to_cursor()  # it's hovering up there: build up to it!
+                continue
             if seg.key == here:
                 far = abs(x - fx) > 320
                 fig.walk_to(x - 45 * (1 if x > fx else -1) if abs(x - fx) > 60 else None, run=far)
@@ -330,11 +364,146 @@ class Brain:
                     yield
             except StopIteration as done:
                 reached = bool(done.value)
-            if not reached:  # unreachable from here: at least get as close as this surface allows
+            if not reached and self._cursor_still_for() > 2.0 and fig.grounded:
+                # Can't jump there and the pointer is waiting: build a staircase up to that surface.
+                t_build = t
+                builder = self._goto(seg.key, x - seg.body.position.x, build=True)
+                try:
+                    while True:
+                        next(builder)
+                        t += self.dt
+                        yield
+                except StopIteration as done:
+                    reached = bool(done.value)
+                if t - t_build < 0.1:
+                    fig.walk_to(cx)
+            elif not reached:  # unreachable for now: at least get as close as this surface allows
                 fig.walk_to(cx)
             yield
         fig.walk_to(None)
         return True
+
+    # -- sparring with the legends --------------------------------------------------------------------------
+
+    def _spar(self) -> Task:
+        """A choreographed fight with one of the original stick figures: stance, a few exchanges (punches,
+        kicks, blocks, dodges), then a finisher - usually an uppercut that launches them off, sometimes a loss."""
+        fig = self.fig
+        seg = self._seg(self._current_key())
+        span = usable_span(seg, self.cfg) if seg else None
+        if span is None:
+            return False
+        lo, hi, _ = span
+        fx = fig.body.position.x
+        side = random.choice((-1, 1))
+        if not lo <= fx + side * 300 <= hi:
+            side = -side
+            if not lo <= fx + side * 300 <= hi:
+                return False  # no room to fight here
+        from stickfigure.figure.rival import pick_character
+
+        who = pick_character()
+        rival = self.make_rival(who, fx + side * 300, fig.feet[1], -side)
+        if rival is None:
+            return False
+        fig.events.append(("spar", "start", who))
+        try:
+            fig.walk_to(None)
+            fig.facing = side
+            fig.pose_mode = "stance"
+            yield from self._idle(0.9)
+            for _ in range(random.randint(3, 6)):
+                yield from self._spar_close(rival, side, lo, hi)
+                if random.random() < 0.55:
+                    yield from self._spar_attack(rival, side)
+                else:
+                    yield from self._spar_defend(rival, side)
+                yield from self._idle(random.uniform(0.25, 0.6))
+            yield from self._spar_close(rival, side, lo, hi)
+            if random.random() < 0.8:  # the finisher
+                fig.pose_mode = "uppercut"
+                yield from self._idle(0.14)
+                rival.spark(fig.body.position.x + side * 45, fig.body.position.y - 30)
+                rival.launch(side)
+                fig.events.append(("spar", "win", who))
+                yield from self._idle(0.5)
+                fig.pose_mode = "victory"
+                yield from self._idle(1.4)
+            else:  # it loses this one (lands on its feet anyway)
+                rival.pose("kick")
+                yield from self._idle(0.14)
+                rival.spark(fig.body.position.x, fig.body.position.y - 10)
+                fig.pose_mode = None
+                fig.jump(-side * 380, -520)
+                fig.tumble_spin = -side * 9.0
+                fig.events.append(("spar", "lose", who))
+                yield from self._await_landing(None)
+                rival.pose("taunt")
+                yield from self._idle(1.3)
+                rival.vanish()
+            return True
+        finally:
+            fig.pose_mode = None
+            fig.walk_to(None)
+            if not rival.fading:
+                rival.vanish()
+
+    def _spar_close(self, rival, side: int, lo: float, hi: float) -> Task:
+        """Step in toward each other until they're at fighting distance."""
+        fig = self.fig
+        fig.pose_mode = None
+        rival.pose(None)
+        mid = min(max((fig.body.position.x + rival.x) / 2, lo + 45), hi - 45)
+        fig.walk_to(mid - side * 42)
+        rival.walk_to(mid + side * 42)
+        t = 0.0
+        while t < 1.5 and (abs(fig.body.position.x - (mid - side * 42)) > 6 or abs(rival.x - (mid + side * 42)) > 6):
+            t += self.dt
+            yield
+        fig.walk_to(None)
+        fig.facing = side
+        rival.puppet.facing = -side
+        fig.pose_mode = "stance"
+        rival.pose("stance")
+
+    def _spar_attack(self, rival, side: int) -> Task:
+        fig = self.fig
+        move = random.choice(("punch", "punch", "kick"))
+        fig.pose_mode = move
+        yield from self._idle(0.1)
+        hit_y = fig.body.position.y - (40 if move == "punch" else 5)
+        rival.spark(fig.body.position.x + side * 55, hit_y)
+        if random.random() < 0.35:
+            rival.pose("block")
+            rival.vx = side * 140.0
+        else:
+            rival.hit(side)
+            fig.events.append(("spar", "hit", rival.who))
+        yield from self._idle(0.32)
+        fig.pose_mode = "stance"
+        rival.pose("stance")
+
+    def _spar_defend(self, rival, side: int) -> Task:
+        fig = self.fig
+        rival.pose(random.choice(("punch", "kick")))
+        yield from self._idle(0.09)
+        roll = random.random()
+        if roll < 0.35:  # dodge: hop over it
+            fig.pose_mode = None
+            fig.jump(0.0, -470.0)
+            yield from self._await_landing(None)
+        else:
+            rival.spark(fig.body.position.x, fig.body.position.y - 30)
+            if roll < 0.7:
+                fig.pose_mode = "block"
+                fig.body.velocity = (-side * 150.0, fig.body.velocity.y)
+            else:
+                fig.pose_mode = "hurt"
+                fig.body.velocity = (-side * 320.0, fig.body.velocity.y)
+                fig.events.append(("spar", "hurt", rival.who))
+            yield from self._idle(0.35)
+        fig.pose_mode = "stance"
+        rival.pose("stance")
 
     def _flip(self) -> Task:
         """A backflip on the spot: one full turn in the air, landing on its feet."""
@@ -370,7 +539,7 @@ class Brain:
         self.fig.walk_to(None)
         return (yield from self._hops(1))
 
-    def _ride_cursor(self) -> Task:
+    def _ride_cursor(self, from_block: bool = False) -> Task:
         """Jump up and grab onto the mouse cursor, hang on for a ride, let go when shaken off or bored."""
         fig = self.fig
         seg = self._seg(self._current_key())
@@ -381,9 +550,10 @@ class Brain:
             return False
         lo, hi, floor_y = span
         cx, cy = self.cursor
-        if not (lo <= cx <= hi):
+        if not (lo - 40 <= cx <= hi + 40):
             return False
-        yield from self._walk(seg.key, cx - seg.body.position.x)
+        if not from_block:
+            yield from self._walk(seg.key, min(max(cx, lo), hi) - seg.body.position.x)
         cx, cy = self.cursor
         hand_rise = floor_y - cy - self.cfg.figure_height * 0.86  # how far above its raised hands
         max_rise = self.cfg.jump_speed ** 2 / (2 * self.cfg.gravity)
@@ -595,8 +765,17 @@ class Brain:
         if plan is None:
             return False
         blocks, land_x = plan
-        stair_kind = random.choice(STAIR_KINDS)
         self.debug_path = [(fx, fy)] + [(bx, by) for bx, by in blocks] + [(land_x, goal.world()[2])]
+        if not (yield from self._build_stairs(blocks)):
+            return False
+        goal = self._seg(key)
+        if goal is None:
+            return False
+        return (yield from self._jump(key, land_x - goal.body.position.x))
+
+    def _build_stairs(self, blocks: list[tuple[float, float]]) -> Task:
+        """Place each block (center x, top y) and hop onto it, in order."""
+        stair_kind = random.choice(STAIR_KINDS)
         reach = 0.28 * self.cfg.figure_height
         for bx, top in blocks:
             cur = self._seg(self._current_key())
@@ -618,10 +797,64 @@ class Brain:
             self.fig.activity_point = None
             if block is None or not (yield from self._jump(("block", block.id), 0.0)):
                 return False
-        goal = self._seg(key)
-        if goal is None:
+        return True
+
+    # -- climbing things on its own ----------------------------------------------------------------
+
+    def _climb_element(self) -> Task:
+        """Pick a text box / button / image in the window in front and get on top of it (jumping if it
+        can, building a staircase if it can't). Prefers ones that are nearby and a bit of a challenge."""
+        cur = self._current_key()
+        fx, fy = self.fig.feet
+        options = []
+        for s in self.world.surfaces():
+            if s.kind != "element" or s.key == cur or usable_span(s, self.cfg) is None:
+                continue
+            lo, hi, y = usable_span(s, self.cfg)
+            dist = abs((lo + hi) / 2 - fx) + abs(y - fy)
+            options.append((dist + random.uniform(0, 300), s))
+        if not options:
             return False
-        return (yield from self._jump(key, land_x - goal.body.position.x))
+        options.sort(key=lambda o: o[0])
+        for _, seg in options[:3]:
+            if (yield from self._goto(seg.key, None, build=True)):
+                return (yield from self._hops(1))  # made it!
+        return False
+
+    def _cursor_above_and_still(self) -> bool:
+        cx, cy = self.cursor
+        fx, fy = self.fig.feet
+        return (abs(cx - fx) < 500 and fy - self.cfg.figure_height * 1.6 > cy > fy - 1200
+                and self._cursor_still_for() > 1.5)
+
+    def _cursor_still_for(self) -> float:
+        cx, cy = self.cursor
+        if not hasattr(self, "_still_at") or math.hypot(cx - self._still_at[0], cy - self._still_at[1]) > 40:
+            self._still_at = (cx, cy, time.monotonic())
+        return time.monotonic() - self._still_at[2]
+
+    def _build_up_to_cursor(self) -> Task:
+        """The pointer is up in the air: build a staircase right up under it, climb it, and grab on."""
+        fx, fy = self.fig.feet
+        cx, cy = self.cursor
+        ride_feet = cy + self.fig.ride_offset()[1] + self.fig.half_extents[1]  # feet when hanging from it
+        top = ride_feet + 25  # stand a little lower, then jump up to grab it
+        if top >= fy - 30:  # already within a hop
+            return (yield from self._ride_cursor())
+        mon = next((m for m in self.world.monitors if m.work.left <= fx < m.work.right), self.world.monitors[0])
+        half = self.cfg.block_size / 2
+        x = min(max(cx, mon.work.left + half + 2), mon.work.right - half - 2)
+        goal = SurfaceSeg(("air",), self.world.space.static_body, x - half, x + half, top, "block")
+        plan = plan_staircase(fx, fy, goal, (mon.work.left, mon.work.right), self.cfg)
+        if plan is None:
+            return False
+        blocks, _ = plan
+        self.debug_path = [(fx, fy)] + blocks + [(x, top)]
+        if not (yield from self._build_stairs(blocks + [(x, top)])):
+            return False
+        if math.hypot(self.cursor[0] - cx, self.cursor[1] - cy) > 150:
+            return (yield from self._hops(1))  # the pointer moved away while it was building
+        return (yield from self._ride_cursor(from_block=True))
 
     # -- primitives ------------------------------------------------------------------------------
 

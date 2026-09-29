@@ -24,8 +24,10 @@ from stickfigure.actions.task import BROWSERS
 from stickfigure.agent.agent import Agent
 from stickfigure.agent.emotion import Emotion
 from stickfigure.agent.memory import Memory
-from stickfigure.agent.persona import STOP_WORDS, YES_WORDS, Situation, where_on_screen
-from stickfigure.config import CONFIG, Config
+from stickfigure.agent.persona import (
+    CLAIMS_ACTION, COMPUTER_COMMAND, STOP_WORDS, YES_WORDS, Situation, where_on_screen,
+)
+from stickfigure.config import CONFIG, Config, temp_scale
 from stickfigure.figure.animator import Anim, Animator
 from stickfigure.figure.brain import Brain
 from stickfigure.figure.controller import Figure
@@ -87,7 +89,7 @@ class Companion:
         self.surface_name = surface_name
         self.cfg = cfg
         # UI hooks (set by the app)
-        self.bubble_say: Callable[[str], None] = lambda text: None
+        self.bubble_say: Callable[..., None] = lambda text, hold=None, log=True: None
         self.bubble_think: Callable[[], None] = lambda: None
         self.bubble_stream: Callable[[str], None] = lambda text: None
         self.bubble_finish: Callable[[], None] = lambda: None
@@ -121,6 +123,7 @@ class Companion:
         agent.on_action = self._on_agent_action
         # The always-on mind: every half minute or so it decides what to do next (set up by the app).
         self.think_enabled = True
+        self.temperature = cfg.temperature  # 1..10: how often it does things on its own
         self._next_think = time.monotonic() + random.uniform(15, 30)
         self._thinking = False
         self._recent_choices: list[str] = []
@@ -129,6 +132,9 @@ class Companion:
         self.adventure = None  # actions.adventure.Adventure
         self.enter_lounge: Callable[[], bool] = lambda: False
         self.user_activity: Callable[[], str] = lambda: "unknown"
+        self.places: Callable[[], list[tuple[str, tuple]]] = lambda: []  # (label, surface key) it could go to
+        self.growth = None  # agent.growth.Growth
+        self._reflecting = False
         self.last_interaction = time.monotonic()
         self._next_chatter = time.monotonic() + random.uniform(*cfg.idle_chatter)
         self._next_zzz = 0.0
@@ -162,7 +168,7 @@ class Companion:
             self.bubble_say(random.choice(["Zzz...", "zzz", "Zzz... mm... blocks..."]))
 
         if now > self._next_chatter:
-            self._next_chatter = now + random.uniform(*self.cfg.idle_chatter)
+            self._next_chatter = now + random.uniform(*self.cfg.idle_chatter) * temp_scale(self.temperature)
             if (
                 now - self.last_interaction > 60
                 and state not in (Anim.SLEEP, Anim.GRABBED)
@@ -175,8 +181,12 @@ class Companion:
             self._save_at = now + 30
             self.save()
 
+        if (self.growth is not None and not self._reflecting and self.growth.due() and not self.agent.busy
+                and not self._thinking):
+            asyncio.ensure_future(self._reflect())
+
         if self.think_enabled and now >= self._next_think and not self._thinking:
-            self._next_think = now + random.uniform(*self.cfg.think_gap)
+            self._next_think = now + random.uniform(*self.cfg.think_gap) * temp_scale(self.temperature)
             if self._can_think(state):
                 asyncio.ensure_future(self._think())
 
@@ -199,15 +209,21 @@ class Companion:
         self._thinking = True
         try:
             idle = win32.user_idle_seconds()
-            context = {"user": (f"away from the computer for {idle:.0f}s" if idle > 30 else
-                                f"active right now ({self.user_activity()})")}
+            places = self.places()[:14]
+            aware = self.agent.awareness()
+            context = {"user": aware or (f"away from the computer for {idle:.0f}s" if idle > 30 else
+                                         f"active right now ({self.user_activity()})"),
+                       "places": "\n".join(f"[{i}] {label}" for i, (label, _) in enumerate(places)),
+                       "personality": self.growth.short() if self.growth is not None else "still forming"}
             choice = await self.agent.think(self.situation(), context, self._recent_choices)
             if choice is None or not self._can_think(self.anim.state):
                 return
             self.last_thought = choice["thought"]
             self.on_thought(choice["thought"])
             log.info("thought: %s -> %s", choice["thought"], choice["action"])
-            done = self._act_on(choice["action"], idle)
+            if self.growth is not None:
+                self.growth.event(f"I thought '{choice['thought'][:80]}' and chose to {choice['action']}")
+            done = self._act_on(choice["action"], idle, choice.get("target", -1), places)
             self._recent_choices = (self._recent_choices + [choice["action"] + ("" if done else " (couldn't)")])[-8:]
             if done and choice["say"] and choice["action"] != "chat" and not self.bubble_busy():
                 self.bubble_say(choice["say"])
@@ -216,16 +232,20 @@ class Companion:
         finally:
             self._thinking = False
 
-    def _act_on(self, action: str, idle: float) -> bool:
-        body = {"wander": None, "follow_cursor": "follow", "ride_cursor": "ride", "chase_cursor": "chase",
-                "flip": "flip", "dance": "dance", "climb": "climb", "build": "build", "sit": "sit", "nap": "sleep"}
+    def _act_on(self, action: str, idle: float, target: int = -1, places: list | None = None) -> bool:
+        if action == "go_to":
+            places = places or []
+            if not 0 <= target < len(places):
+                return False
+            self.brain.command_goto(places[target][1], None, build=True)
+            return True
+        body = {"wander": "explore", "follow_cursor": "follow", "ride_cursor": "ride", "chase_cursor": "chase",
+                "flip": "flip", "dance": "dance", "climb": "climb", "build": "build", "sit": "sit", "nap": "sleep",
+                "climb_element": "climb_element", "reach_cursor": "reach_cursor", "spar": "fight"}
         if action in body:
             if action == "nap" and self.emotion.energy > 0.6:
                 return False
-            if body[action]:
-                self.brain.command(body[action])
-            else:
-                self.brain.cancel()  # its own wandering picks something new
+            self.brain.command(body[action])
             return True
         if action in ("look_up_something", "peek_tabs"):
             adv = self.adventure
@@ -320,18 +340,70 @@ class Companion:
             self.last_interaction = time.monotonic()
         elif kind == "pet":
             e.on_pet()
+            self._grow("sass", -0.006, "the user petted me")
             self._react("pet", 0.8)
             if e.happiness > 0.5:
                 self.brain.command("hop")
             self.last_interaction = time.monotonic()
         elif kind == "thrown":
             e.on_thrown(event[1])
+            self._grow("boldness", 0.006, "the user threw me across the screen")
+            self._grow("sass", 0.004)
             self._react("thrown", 0.7)
+        elif kind == "spar":
+            self._on_spar(event[1], event[2])
         elif kind == "ride":
             self._react("ride", 0.8)
+            self._first("first_ride", "The first time I grabbed the Animator's cursor and rode it around!")
+            self._grow("boldness", 0.004, "I rode the user's cursor")
         elif kind == "knocked":
             e.on_knocked()
+            self._grow("boldness", -0.006, "I got knocked flat after a throw")
             self._react("knocked", 0.6)
+
+    def _on_spar(self, phase: str, who) -> None:
+        short = who.name.removeprefix("The ")
+        if phase == "start":
+            self.bubble_say(random.choice(who.greet) if who.greet else f"{who.name}?! Let's go!")
+            self._first("first_fight", f"My first sparring match - against {who.name}!")
+        elif phase == "win":
+            self.bubble_say(random.choice(["GG!", f"Too easy, {short}.", "And STAY down!", "W. Easy W.",
+                                           f"Better luck next time, {short}!"]))
+            self._grow("boldness", 0.006, f"I won a sparring match against {who.name}")
+        elif phase == "lose":
+            self.bubble_say(random.choice(["Ow! Okay, okay, you win this one.", f"Next time, {short}!",
+                                           "L... rematch later.", "I let you win. Obviously."]))
+            self._grow("playfulness", 0.004, f"I lost a sparring match to {who.name}")
+        elif phase in ("hit", "hurt") and random.random() < 0.25 and not self.bubble_busy():
+            self.bubble_say(random.choice(["Hah!", "Take that!", "Hyah!"] if phase == "hit"
+                                          else ["Oof!", "Hey!", "Cheap shot!"]), log=False)
+
+    # -- growing up ---------------------------------------------------------------------------------
+
+    def _grow(self, trait: str, delta: float, why: str = "") -> None:
+        if self.growth is not None:
+            self.growth.nudge(trait, delta, why)
+
+    def _first(self, key: str, text: str) -> None:
+        if self.growth is not None and self.growth.first(key, text):
+            self.chat_add_note(f"✦ A first: {text}")
+
+    def on_sentiment(self, s: float) -> None:
+        """How the user talks to it shapes it: warmth makes it sweeter and chattier, snapping makes it sassier."""
+        if s > 0:
+            self._grow("sass", -0.008 * s, "the user was kind to me")
+            self._grow("chattiness", 0.005 * s)
+        elif s < 0:
+            self._grow("sass", 0.01 * -s, "the user snapped at me")
+
+    async def _reflect(self) -> None:
+        self._reflecting = True
+        try:
+            await self.agent.reflect()
+        except Exception as e:  # growing up must never break anything
+            log.warning("reflection failed: %s", e)
+        finally:
+            self._reflecting = False
 
     def _react(self, kind: str, chance: float) -> None:
         if self.bubble_busy() or random.random() > chance:
@@ -359,13 +431,13 @@ class Companion:
             yes = bool(YES_WORDS.match(text))
             self._confirm.set_result("approve" if yes else "deny")
             reply = "On it!" if yes else "Okay, I won't."
-            self.bubble_say(reply)
+            self.bubble_say(reply, log=False)  # (on_text puts it in the chat)
             on_text(reply)
             return []
         busy = self.actions is not None and self.actions.busy
         if busy and STOP_WORDS.match(text):
             self.actions.stop("you asked me to stop")
-            self.bubble_say("Stopping!")
+            self.bubble_say("Stopping!", log=False)
             on_text("Stopping!")
             return []
         if self.anim.state == Anim.SLEEP:
@@ -388,6 +460,11 @@ class Companion:
             text, self.situation(), stream, observation=observation, suppress_actions=observation is not None
         )
         self.bubble_finish()
+        if (self._pending_task is None and observation is None and not busy and self.actions is not None
+                and CLAIMS_ACTION.search(reply.text or "")):
+            # It said it's doing something ("typing it now!") but no task was started: really do it.
+            log.info("the reply claimed an action with no task running: starting one")
+            self._plan_task({"screen": "act", "target": text.strip()[:200], "app": "", "content": ""}, text)
         if self._pending_task is not None:
             goal, payload, target, context = self._pending_task
             self._pending_task = None
@@ -486,6 +563,10 @@ class Companion:
         asyncio.ensure_future(self.agent.learn(goal, target.app, result.status, result.message, result.steps))
         if result.status == "asked":
             self._awaiting_answer = {"question": result.message, "goal": goal, "payload": payload, "target": target}
+        if self.growth is not None:
+            self.growth.event(f"I did a task for the user: {goal} ({result.status})")
+            if result.status == "done":
+                self._first("first_task", f"The first job I did on the computer for the user: {goal}")
         if result.status == "done":
             self.emotion.on_explored()
             self.brain.command("hop")
@@ -502,7 +583,7 @@ class Companion:
             self.bubble_finish()
             self.chat_add_assistant(text)
         else:
-            self.bubble_say(result.message)
+            self.bubble_say(result.message, log=False)
             self.chat_add_assistant(result.message)
 
     async def confirm(self, what: str, why: str, destructive: bool, keep_clear, element_rect) -> str:
@@ -510,7 +591,7 @@ class Companion:
         loop = asyncio.get_running_loop()
         self._confirm = loop.create_future()
         question = f"Should I {what}? ({why}) Say yes or no."
-        self.bubble_say(f"Should I {what}?", hold=self.cfg.approval_timeout)
+        self.bubble_say(f"Should I {what}?", hold=self.cfg.approval_timeout, log=False)
         self.chat_add_assistant(question)
         self.open_chat()
         if element_rect is not None:
@@ -533,7 +614,7 @@ class Companion:
         self._confirm = asyncio.get_running_loop().create_future()
         self.open_chat()
         self.chat_add_assistant(f"{question} (say yes or no)")
-        self.bubble_say(question, hold=10)
+        self.bubble_say(question, hold=10, log=False)
         try:
             return await asyncio.wait_for(asyncio.shield(self._confirm), timeout) == "approve"
         except asyncio.TimeoutError:
@@ -554,6 +635,10 @@ class Companion:
         if self.perception is None:
             return self._peek_context(), None
         route = await self.agent.route(text)
+        if route["screen"] == "none" and COMPUTER_COMMAND.search(text):
+            # The router called a clear command "just chatting": do it anyway (never role-play doing it).
+            log.info("router said none, but this is a command: treating it as a task")
+            route = {"screen": "act", "target": text.strip()[:200], "app": route.get("app", ""), "content": ""}
         if route["screen"] == "none":
             return self._peek_context(), None  # e.g. the user answering our question about their screen
         if route["screen"] == "act":

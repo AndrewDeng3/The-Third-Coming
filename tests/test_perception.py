@@ -116,3 +116,18 @@ def test_brain_walks_toward_target_and_points():
     step(world, fig, 10, lambda dt: (brain.update(dt, (0, 0)), seen.append(fig.activity)))
     assert Activity.POINT in seen
     assert abs(fig.body.position.x - 1500) < 10
+
+
+def test_clear_commands_are_recognized_but_body_actions_and_chat_are_not():
+    from stickfigure.agent.persona import CLAIMS_ACTION, COMPUTER_COMMAND
+
+    for cmd in ("type hello in my doc", "can you write a reply to Manna", "ok now write it in the google doc",
+                "please click the share button", "open youtube", "search up octopuses", "press enter",
+                "go to reddit", "reply to my friend in the doc"):
+        assert COMPUTER_COMMAND.search(cmd), cmd
+    for chat in ("do you like typing?", "follow my cursor", "can you dance", "I wrote a poem yesterday",
+                 "what are you up to", "climb on that window"):
+        assert not COMPUTER_COMMAND.search(chat), chat
+    assert CLAIMS_ACTION.search("Sure! I'm typing it now.")
+    assert CLAIMS_ACTION.search("Okay, let me open that for you!")
+    assert not CLAIMS_ACTION.search("I love typing little notes, it's fun.")

@@ -11,7 +11,7 @@ from stickfigure.agent.lore import LORE, SHORT_LORE
 from stickfigure.agent.memory import Fact
 
 ACTIONS = ("sit", "wave", "hop", "climb", "come", "dance", "sleep", "build", "demolish", "ride", "flip", "chase",
-           "follow")
+           "follow", "fight")
 _TAG = re.compile(r"\[(\w+)\]")
 
 
@@ -32,6 +32,8 @@ def system_prompt(
     observation: str | None = None,
     user_name: str = "",
     episodes: list[Fact] | None = None,
+    self_text: str = "",
+    aware: str = "",
 ) -> str:
     when = time.strftime("%A %I:%M %p", time.localtime(now if now is not None else time.time())).replace(" 0", " ")
     who = f"\nThe user's name is {user_name}. Use it now and then, naturally (not in every message)." if user_name else ""
@@ -56,10 +58,16 @@ You run along the tops of their windows, leap between them, build block staircas
 grab onto their mouse cursor for a ride, and have a cozy lounge (inside the chat window) you retreat to.
 Personality: playful, curious, mischievous, warm, and expressive. You have real moods and they color how you talk.{who}
 
-{LORE}
+{LORE}{chr(10) * 2 + self_text if self_text else ""}
 
 Style rules:
-- Casual chat: 1-3 short sentences. Your words also appear in a small speech bubble.
+- Talk like a real person texting a friend, not an assistant: contractions, casual phrasing, reactions
+  ("wait what", "no way", "hmm"), opinions, a bit of teasing. Casual chat is short - often one line, sometimes
+  just a word or two. Your words also appear in a small speech bubble.
+- Slang is welcome when it fits naturally (lol, ngl, lowkey, fr, bro, bruh, bet, nah, deadass, no cap, W, L,
+  vibe, sus, goated, it's giving...). Don't cram several into one line, and match the user's own vibe.
+- Never sound like a customer-service bot: no "How can I assist you?", "Certainly!", "As an AI", "I'm here to
+  help", and no sign-offs like "Let me know if you need anything else".
 - When the user asks for something substantial (code, an explanation, steps, a list, a story), give a full,
   well-organized answer. Markdown is rendered in the chat: use **bold**, lists, headings, and fenced code
   blocks with a language (```python). Never cut code short.
@@ -81,12 +89,14 @@ You can move your own body. If it fits the moment, end your reply with exactly o
 [build] (build a little structure out of blocks on the taskbar) [demolish] (knock down one of your structures)
 [ride] (jump up and hang onto the user's mouse cursor for a ride) [flip] (do a backflip) [chase] (sprint after the cursor)
 [follow] (follow the user's cursor around the screen for a minute)
+[fight] (a sparring match with one of the legends: the Chosen One, the Dark Lord, the Second Coming, King Orange,
+or the Color Gang)
 Most replies need no tag.
 
 Right now:
 - Time: {when}
 - Mood: {emotion.describe()}
-- You are {situation.activity} on {situation.surface}.
+- You are {situation.activity} on {situation.surface}.{chr(10) + aware if aware else ""}
 
 Things you remember about the user:
 {remembered}{past}{seen}"""
@@ -99,6 +109,24 @@ _SCREEN_HINT = re.compile(
     r"what'?s (?:this|that|on|here|up)|read|says?|which|type|write|press|scroll|select|fill|paste|put|"
     r"enter|insert|go to|navigate|search for|bold|underline|doc|document|code|program|script|website|site|"
     r"google|browser|chrome|replit|editor|app)\b",
+    re.I,
+)
+# An unmistakable request to do something with the keyboard/mouse. Used as a safety net when the routing model
+# files a real request under "just chatting" (which made the figure role-play "typing it now!" and do nothing).
+COMPUTER_COMMAND = re.compile(
+    r"(?:^|\b(?:can|could|would|will) you\s+|\b(?:please|pls|now|then|ok|okay|go|just|try (?:and|to))\s+|^\s*)"
+    r"(type|write|paste|click|double[- ]click|press|hit|open|close the tab|search( for| up)?|look up|google|"
+    r"scroll|select|highlight|copy|go to|navigate to|visit|play|pause|fill( in| out)?|enter|submit|bold|"
+    r"underline|delete|erase|replace|reply|respond|comment|add|put)\b"
+    r"(?![^.!?]*\b(dance|sit|nap|sleep|flip|hop|jump|climb|wave|follow (my|the) (cursor|mouse)|ride|chase|"
+    r"build (a|some)|lounge)\b)",
+    re.I,
+)
+# Its reply says it's doing something on the computer right now (it's pretending if no task started).
+CLAIMS_ACTION = re.compile(
+    r"\b(i'?m|i am|i'll|i will|let me|going to|gonna|now)\s+(just\s+)?(typing|type|writing|write|clicking|click|"
+    r"opening|open|searching|search|pasting|paste|pressing|press|scrolling|scroll|putting|put|adding|add)\b"
+    r"|\b(typed|clicked|opened|pasted|searched|wrote|added) (it|that|this|the)\b",
     re.I,
 )
 STOP_WORDS = re.compile(r"^\s*(stop|cancel|halt|abort|nevermind|never mind|quit it|don'?t)\b", re.I)
@@ -212,7 +240,8 @@ sit = sit down, wave = wave, hop = jump, climb = climb to the highest window, co
 dance = dance, sleep = take a nap, build = build something out of blocks, demolish = knock down / clear away
 one of the things it built, ride = grab onto / latch onto / hang from the user's mouse cursor, flip = do a
 backflip or a trick, chase = chase / catch the cursor, follow = follow the user's mouse/cursor around
-(keep following it), come = walk over to the user once."""
+(keep following it), come = walk over to the user once, fight = fight / spar / battle one of the stick
+figure legends (Chosen One, Dark Lord, Second Coming, King Orange, Red, Blue, Green, Yellow, Purple)."""
 
 
 def extraction_messages(user_text: str, reply: str, known: list[Fact]) -> list[dict]:
@@ -351,16 +380,18 @@ def clean_reply(text: str) -> str:
 
 # -- the always-on mind: what to do next -----------------------------------------------------------
 
-MIND_ACTIONS = ("nothing", "wander", "follow_cursor", "ride_cursor", "chase_cursor", "flip", "dance", "climb", "build",
-                "sit", "nap", "look_up_something", "peek_tabs", "look_at_screen", "chat", "lounge")
+MIND_ACTIONS = ("nothing", "go_to", "wander", "climb_element", "reach_cursor", "follow_cursor", "ride_cursor",
+                "chase_cursor", "flip", "dance", "climb", "build", "sit", "nap", "look_up_something", "peek_tabs",
+                "look_at_screen", "chat", "lounge", "spar")
 MIND_SCHEMA = {
     "type": "object",
     "properties": {
         "thought": {"type": "string"},
         "action": {"type": "string", "enum": list(MIND_ACTIONS)},
+        "target": {"type": "integer"},
         "say": {"type": "string"},
     },
-    "required": ["thought", "action", "say"],
+    "required": ["thought", "action", "target", "say"],
 }
 
 
@@ -372,20 +403,29 @@ def mind_messages(name: str, emotion: Emotion, situation: Situation, context: di
         {"role": "system", "content": (
             f"You are the inner mind of {name}, a lively, mischievous stick figure living on the user's desktop. "
             f"{SHORT_LORE} Every so often you decide what to do next. "
-            "Be curious and varied: don't repeat what you just did, mix physical play with exploring.\n"
-            "Actions: wander (explore the windows), follow_cursor, ride_cursor (hang from the pointer), "
+            "Be curious and varied: don't repeat what you just did, mix physical play with exploring. "
+            "Your home is the ground (the taskbar): you mostly hang out down there and only climb up with a "
+            "reason, then come back down.\n"
+            "Actions: go_to (travel to one of the numbered places below: set target to its number; it jumps, "
+            "or builds a block staircase if it's too high), climb_element (climb onto some text box/button), "
+            "reach_cursor (build a tower up to the mouse pointer and grab it), wander (explore somewhere random), "
+            "follow_cursor, ride_cursor (hang from the pointer), spar (a legend from the series warps in for a "
+            "sparring match - best while the user is away), "
             "chase_cursor, flip (backflip), dance, climb (to the highest window), build (a block structure), "
             "sit, nap (only if tired), look_up_something (google something fun in a new tab - only when the "
             "user is away), peek_tabs (flip through their browser tabs - only when away), look_at_screen "
             "(glance at what they're doing and ask about it - when they're active), chat (say something to "
             "them), lounge (relax in your lounge in the chat window), nothing.\n"
-            "thought = your private reasoning in one short sentence. say = an optional short line spoken out "
-            "loud (under 12 words, often empty).")},
+            "thought = your private reasoning in one short sentence. Your action MUST carry out your thought "
+            "(thinking about the search box -> go_to that search box). target = a place number for go_to, "
+            "else -1. say = an optional short line spoken out loud (under 12 words, often empty).")},
         {"role": "user", "content": (
             f"Time: {time.strftime('%A %I:%M %p')}\nMood: {emotion.describe()}\n"
             f"You are {situation.activity} on {situation.surface}.\n"
+            f"Your personality so far: {context.get('personality', 'still forming')}\n"
             f"The user: {context.get('user', 'unknown')}\n"
-            f"Things you know about them: {known}\nWhat you did recently: {did}")},
+            f"Things you know about them: {known}\nWhat you did recently: {did}\n"
+            f"Places you can go:\n{context.get('places') or '(none)'}")},
     ]
 
 
@@ -410,7 +450,9 @@ _COMPOSE_SYSTEM = """You write content that will be typed/pasted verbatim into a
 Output ONLY the content itself: no introduction, no explanation, no markdown fences around it.
 - Code: complete, correct, runnable, idiomatic, with brief comments where helpful. Never truncate or
   leave placeholders like "..." or "rest of code here".
-- Prose: natural and well-written, matching the request's tone and length.
+- Prose: natural, matching the request's tone and length. Casual things (messages, replies, notes to
+  friends) should sound like a real person texting - contractions, slang if it fits, no stiff greetings,
+  and don't reintroduce yourself unless asked.
 If current text of the document/editor is given, write only what should be ADDED unless the request says
 to replace it."""
 

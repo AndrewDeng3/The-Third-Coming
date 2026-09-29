@@ -7,7 +7,7 @@ from typing import Callable
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QCheckBox, QComboBox, QDoubleSpinBox, QSpinBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QSlider, QVBoxLayout, QWidget,
 )
 
@@ -56,6 +56,9 @@ class SettingsPanel(QWidget):
         for key, label in STT_MODELS.items():
             self.stt.addItem(label, key)
         self.stt.setCurrentIndex(max(0, self.stt.findData(v["stt_model"])))
+        self.temperature = QSpinBox(minimum=1, maximum=10, value=int(v.get("temperature", 3)))
+        self.temperature.setToolTip("How often it does things on its own: pranks, web adventures, thinking. Higher also "
+                                    "means it clicks into more search results on its own adventures. 3 is the default.")
         self.mischief = QCheckBox("Harmless pranks when I'm idle")
         self.mischief.setToolTip("Cursor tugs, a little scrolling, hovering. Never clicks or types.")
         self.mischief.setChecked(v["mischief"])
@@ -63,6 +66,10 @@ class SettingsPanel(QWidget):
         self.notice.setToolTip("Only the window you're using, never password/banking/security windows. "
                                "Stays on this computer and isn't saved to long-term memory.")
         self.notice.setChecked(v.get("notice_activity", True))
+        self.awareness = QCheckBox("Keep track of what I'm doing (apps & window titles)")
+        self.awareness.setToolTip("Which app and page you're in, switches, typing vs. mouse vs. away, and time per app. "
+                                  "No screenshots, never saved to disk, private windows aren't named.")
+        self.awareness.setChecked(v.get("awareness", True))
         self.adventures = QCheckBox("Explore the web / peek at my tabs when I'm away")
         self.adventures.setToolTip("Opens a new tab to look up something it's curious about (and closes it), or "
                                    "flips to your next browser tab and back. Never clicks, types, or touches files; "
@@ -88,7 +95,9 @@ class SettingsPanel(QWidget):
         form.addRow("Volume", self.volume)
         form.addRow("Listening", self.stt)
         form.addRow(self._section("Behavior"))
+        form.addRow("Temperature", self.temperature)
         form.addRow("", self.mischief)
+        form.addRow("", self.awareness)
         form.addRow("", self.notice)
         form.addRow("", self.adventures)
         form.addRow("", self.supervised)
@@ -134,6 +143,8 @@ class SettingsPanel(QWidget):
             "stt_model": self.stt.currentData(),
             "mischief": self.mischief.isChecked(),
             "notice_activity": self.notice.isChecked(),
+            "awareness": self.awareness.isChecked(),
+            "temperature": self.temperature.value(),
             "adventures": self.adventures.isChecked(),
             "supervised": self.supervised.isChecked(),
             "chat_model": self.chat_model.text().strip() or "llama3.2:3b",

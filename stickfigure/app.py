@@ -25,6 +25,8 @@ from stickfigure.actions.controller import ActionController
 from stickfigure.actions.mischief import Mischief
 from stickfigure.agent.agent import Agent, ollama_embedder
 from stickfigure.agent.emotion import Emotion
+from stickfigure.agent.growth import Growth
+from stickfigure.awareness import Awareness
 from stickfigure.agent.memory import Memory
 from stickfigure.agent.ollama import Ollama, OllamaError
 from stickfigure.companion import Companion
@@ -35,7 +37,9 @@ from stickfigure.figure.controller import Figure
 from stickfigure.overlay.block_window import BlockViews
 from stickfigure.overlay.debug_overlay import DebugOverlay
 from stickfigure.overlay.figure_window import FigureWindow
+from stickfigure.figure.rival import Rival
 from stickfigure.overlay.highlight import Highlight
+from stickfigure.overlay.rival_window import RivalWindow
 from stickfigure.perception.perception import Perception, Target, choose_target
 from stickfigure.perception.uia import UIAReader
 from stickfigure.overlay.render import COLORS, draw_figure
@@ -56,7 +60,7 @@ from stickfigure.win.hotkeys import VK_SPACE, Hotkeys
 from stickfigure.win import win32
 from stickfigure.win.tracker import WindowTracker
 from stickfigure.world.blocks import BlockManager
-from stickfigure.world.elements import pick_element_platforms
+from stickfigure.world.elements import pick_element_platforms, visible_ledges
 from stickfigure.world.physics import World
 
 log = logging.getLogger("stickfigure")
@@ -102,6 +106,12 @@ class StickFigureApp:
         self.memory = Memory(Path(self.cfg.data_dir) / "memory.db", ollama_embedder(self.ollama, self.cfg.embed_model))
         self.emotion = Emotion.from_dict(self.memory.get("emotion"))
         self.agent = Agent(self.ollama, self.memory, self.emotion)
+        self.growth = Growth(self.memory)  # who it's becoming: traits + a journal about itself
+        # Constant, cheap awareness of what the user is doing (apps, titles, activity; no screenshots).
+        self.awareness = Awareness()
+        self.awareness.enabled = self.cfg.awareness
+        self.agent.awareness = self.awareness.summary
+        self.agent.growth = self.growth
         # Permanent structures persist across restarts.
         self.blocks.on_persist = lambda data: self.memory.put("permanent_blocks", data)
         restored = self.blocks.restore(self.memory.get("permanent_blocks", []),
@@ -109,6 +119,10 @@ class StickFigureApp:
         if restored:
             log.info("restored %d permanent blocks", restored)
         self.brain = Brain(self.fig, self.world, self.blocks, self.emotion)
+        self.brain.trait = self.growth.weight
+        self.brain.make_rival = self._make_rival
+        self.brain.user_idle = win32.user_idle_seconds
+        self.rivals: list[tuple[Rival, RivalWindow]] = []
         self.companion = Companion(
             self.fig, self.brain, self.anim, self.world, self.agent, self.memory, self.emotion, self._surface_name
         )
@@ -116,6 +130,8 @@ class StickFigureApp:
         # A separate reader (own thread) for the standable-ledge scanner, so it never delays a task's eyes.
         self.element_reader = UIAReader(max_elements=800)
         self.companion.perception = self.perception
+        self.companion.growth = self.growth
+        self.agent.on_sentiment = self.companion.on_sentiment
         self.companion.choose_target = self._perception_target
 
         # UI
@@ -123,6 +139,7 @@ class StickFigureApp:
         self.fig_window = FigureWindow(self.anim, lambda: self.menu.popup(QCursor.pos()), self.open_chat)
         self.bubble = SpeechBubble(round(15 * self.ui_scale), round(300 * self.ui_scale))
         self.chat = ChatWindow(self.agent.name, self.ui_scale)
+        self.chat.setWindowIcon(_app_icon(self.anim))  # (Windows otherwise shows Python's icon)
         self.chat.submitted.connect(lambda text: asyncio.ensure_future(self._on_chat(text)))
         self.chat.moved.connect(self.tracker.mark_dirty)  # our own windows don't fire WinEvents
         self.debug = DebugOverlay(self.world, self._stats, lambda: self.brain.debug_path)
@@ -170,6 +187,7 @@ class StickFigureApp:
         self.companion.adventure = self.adventure
         self.companion.enter_lounge = self._mind_lounge
         self.companion.user_activity = self._user_activity
+        self.companion.places = self._places
         self.companion.on_thought = lambda thought: self._update_mood_line()
         # Voice: everything the figure says in its bubble is also spoken (streamed sentence by sentence).
         self.speaker = Speaker()
@@ -233,6 +251,7 @@ class StickFigureApp:
         self._quitting = False
         self._hidden_for_fullscreen = False
         self._riding_click_through = False
+        self._raise_next = 0.0
         self._step_ms = 0.0
         self._frame_ms = 0.0
         self._debug_next = 0.0
@@ -272,7 +291,7 @@ class StickFigureApp:
         for label, action in (("Sit down", "sit"), ("Wave", "wave"), ("Dance", "dance"),
                               ("Climb to highest window", "climb"), ("Take a nap", "sleep"),
                               ("Ride my cursor", "ride"), ("Follow my cursor", "follow"), ("Backflip", "flip"),
-                              ("Chase my cursor", "chase")):
+                              ("Chase my cursor", "chase"), ("Spar with a legend", "fight")):
             a = QAction(label, do)
             a.triggered.connect(lambda _=False, act=action: self.brain.command(act))
             do.addAction(a)
@@ -336,7 +355,7 @@ class StickFigureApp:
 
     def open_chat(self) -> None:
         if not self.chat.isVisible():
-            self.chat.load_history(self.memory.recent_messages(40))
+            self.chat.load_history(self.memory.recent_messages(60, asides=True))
             self._update_mood_line()
         x, y = self.fig.body.position
         mon = next((m.work for m in self.world.monitors if m.work.left <= x < m.work.right), self.world.monitors[0].work)
@@ -360,12 +379,69 @@ class StickFigureApp:
             + (f"  ·  💭 {thought}" if thought else "")
         )
 
+    def _set_temperature(self, t: int) -> None:
+        """How often it does things on its own (applies right away; schedules shrink or stretch)."""
+        t = max(1, min(10, int(t)))
+        old = self.companion.temperature
+        self.companion.temperature = self.mischief.temperature = self.adventure.temperature = t
+        if t > old:  # hotter: don't wait out the old, longer gaps
+            now = time.monotonic()
+            for obj, attr in ((self.mischief, "_next_at"), (self.adventure, "_next_at"),
+                              (self.companion, "_next_think")):
+                setattr(obj, attr, min(getattr(obj, attr), now + (getattr(obj, attr) - now) * old / t))
+
+    def _make_rival(self, who, x: float, floor_y: float, facing: int) -> "Rival | None":
+        if self.rivals or self._in_lounge or self._hidden_for_fullscreen:
+            return None
+        rival = Rival(who, x, floor_y, facing)
+        window = RivalWindow(rival, self.ui_scale)
+        window.show()
+        self.tracker.ignore(window.winId())  # not a platform
+        self.rivals.append((rival, window))
+        log.info("sparring with %s", who.name)
+        return rival
+
+    def _update_rivals(self, dt: float) -> None:
+        for rival, window in list(self.rivals):
+            rival.update(dt)
+            window.sync()
+            if rival.done:
+                window.close()
+                window.deleteLater()
+                self.rivals.remove((rival, window))
+
     def _mind_lounge(self) -> bool:
         if not self.chat.isVisible() or self._in_lounge:
             return False
         self._last_chat_activity = time.monotonic() - self.cfg.lounge_after
         self._maybe_enter_lounge(force=True)
         return self._in_lounge
+
+    def _places(self) -> list[tuple[str, tuple]]:
+        """Named surfaces the mind can send the figure to, nearest first."""
+        fx, fy = self.fig.feet
+        here = self.world.surface_for_shape(self.fig.ground_shape)
+        titles = {w.hwnd: w.title for w in self.tracker.snapshot.windows}
+        out = []
+        for s in self.world.surfaces():
+            if s.key == here:
+                continue
+            x0, x1, y = s.world()
+            if s.kind == "floor":
+                label = "the taskbar at the bottom of the screen"
+            elif s.kind == "window":
+                t = titles.get(s.key[1], "") or "a window"
+                label = f"the top edge of the '{t[:40]}' window"
+            elif s.kind == "element":
+                name = self.world.element_labels.get(s.key[1], "an element")
+                label = f"on top of {name} (in the window in front)"
+            else:
+                label = "one of your blocks"
+            height = "above you" if y < fy - 40 else "below you" if y > fy + 40 else "level with you"
+            dist = abs((x0 + x1) / 2 - fx) + abs(y - fy)
+            out.append((dist, f"{label} - {height}", s.key))
+        out.sort(key=lambda o: o[0])
+        return [(label, key) for _, label, key in out]
 
     def _user_activity(self) -> str:
         t = self._peek_target()
@@ -378,6 +454,12 @@ class StickFigureApp:
             self.chat.add_note("Things I remember:\n" + "\n".join(f"• {f.text}" for f in facts))
         else:
             self.chat.add_note("I don't remember anything about you yet.")
+        g = self.growth
+        about_me = [f"I've lived here {g.age_days():.0f} days. I'm {g.short()}."]
+        if g.mood_of_late:
+            about_me.append(f"Lately: {g.mood_of_late}")
+        about_me += [f"• ({n['kind']}) {n['text']}" for n in g.notes[-15:]]
+        self.chat.add_note("About me:\n" + "\n".join(about_me))
 
     def _clear_all_blocks(self) -> None:
         asyncio.ensure_future(self._clear_all_blocks_flow())
@@ -392,12 +474,7 @@ class StickFigureApp:
             self.chat.add_note("All blocks cleared.")
 
     def clear_chat(self) -> None:
-        asyncio.ensure_future(self._clear_chat_flow())
-
-    async def _clear_chat_flow(self) -> None:
-        if not await self.companion.ask_yes_no(
-                "Erase our conversation? I'll still remember things about you, just not the chat."):
-            return
+        """Wipe the conversation right away (long-term memories and mood are kept)."""
         self.memory.clear_messages()
         self.companion.reset_conversation()
         self.chat.load_history([])
@@ -412,6 +489,7 @@ class StickFigureApp:
             return
         self.memory.forget_everything()
         self.emotion.__init__()
+        self.growth.__init__(self.memory)  # a fresh start for its personality too
         self.chat.load_history([])
         self.bubble.say("Huh? Who are you? ...Hi!")
 
@@ -486,6 +564,7 @@ class StickFigureApp:
         if reason == "user":
             self._say(random.choice(["I'm back!", "Oh, hi!", "Coming!", "Break's over!"]))
         elif reason == "bored":
+            self.growth.nudge("wanderlust", 0.005, "I got restless in the lounge and went out exploring")
             # It chose to leave: don't drag it straight back in, and let it go do something.
             self._lounge_cooldown_until = time.monotonic() + 600
             self._last_chat_activity = time.monotonic()
@@ -500,6 +579,11 @@ class StickFigureApp:
         log.info("left the lounge (%s)", reason)
 
     async def _adventure_comment(self, observation: str, instruction: str) -> None:
+        self.growth.nudge("wanderlust", 0.008, "I went exploring the internet on my own")
+        if "looked up" in observation:
+            q = observation.split('"')[1] if observation.count('"') >= 2 else "something"
+            if self.growth.first("first_search", f"My first ever web search, all by myself: \"{q}\""):
+                self.chat.add_note("✦ A first: my first ever web search!")
         if self.agent.busy or self.bubble.busy:
             return
         text = await self.agent.follow_up(self.companion.situation(), observation, instruction, self._stream)
@@ -507,19 +591,46 @@ class StickFigureApp:
             self._finish_speech()
             self.chat.add_assistant(text)
 
+    def _sense(self) -> None:
+        if not self.awareness.enabled:
+            return
+        fg = int(win32.user32.GetForegroundWindow() or 0)
+        if fg and win32.window_pid(fg) == os.getpid():
+            process, title, private = "the chat with you", "", False
+        elif fg:
+            process, title = win32.process_name(fg), win32.window_title(fg)
+            private = window_problem(WindowInfo(fg, process, win32.class_name(fg), title)) is not None
+        else:
+            process, title, private = "", "", False
+        self.awareness.observe(time.time(), process, title, private, win32.cursor_pos(), win32.user_idle_seconds())
+        self._sense_n += 1
+        if self._sense_n % 4 == 0 and fg and not private and win32.window_pid(fg) != os.getpid():
+            loop = asyncio.get_event_loop()
+
+            def got(fut) -> None:
+                try:
+                    el = fut.result()
+                except Exception:  # noqa: BLE001 - focus can vanish mid-read
+                    return
+                if el is not None and not el.is_password:
+                    loop.call_soon_threadsafe(self.awareness.set_focus, el.describe())
+
+            self.element_reader.focused().add_done_callback(got)
+
     async def _scan_elements(self) -> None:
         if self._scanning or self._paused:
             return
         if self._scan_skip > 0:  # the last read was slow (a huge page): give the app a breather
             self._scan_skip -= 1
             return
-        fg = int(win32.user32.GetForegroundWindow() or 0)
+        fg = front = int(win32.user32.GetForegroundWindow() or 0)
+        owner = self.world.element_owner
+        if fg and win32.window_pid(fg) == os.getpid() and owner and win32.user32.IsWindow(owner):
+            fg = owner  # typing in our chat: the app behind it (and its ledges) is still there
         if (not fg or win32.window_pid(fg) == os.getpid() or self._in_lounge or self._hidden_for_fullscreen
-                or self.actions.busy or fg not in self.world.platforms):
-            # Keep the current ones if the figure is standing on one; otherwise drop them.
-            key = self.world.surface_for_shape(self.fig.ground_shape)
-            if self.world.element_shapes and not (key and key[0] == "elem") and fg != self.world.element_owner:
-                self.world.clear_elements()
+                or self.actions.busy):
+            if self.world.element_shapes and fg != self.world.element_owner:
+                self.world.clear_elements()  # another window came to the front: those ledges are gone
             return
         rect = win32.frame_bounds(fg)
         info = WindowInfo(fg, win32.process_name(fg), win32.class_name(fg), win32.window_title(fg))
@@ -530,18 +641,17 @@ class StickFigureApp:
             t0 = time.perf_counter()
             elements = await asyncio.wait_for(asyncio.wrap_future(self.element_reader.elements(fg, rect)), 4)
             took = time.perf_counter() - t0
-            self._scan_skip = 0 if took < 0.4 else min(15, int(took * 4))
-            if win32.user32.GetForegroundWindow() != fg:
-                return
-            rects = pick_element_platforms(elements, rect)
-            key = self.world.surface_for_shape(self.fig.ground_shape)
-            if key and key[0] == "elem" and self.fig.grounded and fg == self.world.element_owner:
-                # Standing on one: only refresh if the one underfoot survives (else it'd drop mid-stride).
-                fx, fy = self.fig.feet
-                if not any(r.left <= fx <= r.right and abs(r.top - fy) < 8 for r in rects):
-                    return
-            if self.world.set_element_platforms(fg, rects):
-                log.debug("element platforms: %d in %s", len(rects), info.process)
+            self._scan_skip = 0 if took < 0.3 else min(20, int(took * 5))  # heavy page: scan less often
+            if int(win32.user32.GetForegroundWindow() or 0) != front:
+                return  # the user switched windows while we were reading: next scan
+            # Windows in front of this one (z-order: top-most first) hide parts of its elements.
+            order = self.tracker.snapshot.windows
+            idx = next((i for i, w in enumerate(order) if w.hwnd == fg), 0)
+            occluders = [w.rect for w in order[:idx]]
+            ledges = visible_ledges(pick_element_platforms(elements, rect), occluders)
+            # Always match what's really there: if the ledge underfoot changed or vanished, it drops.
+            if self.world.set_element_platforms(fg, [r for r, _ in ledges], [lbl for _, lbl in ledges]):
+                log.debug("element ledges: %d in %s", len(ledges), info.process)
         except (asyncio.TimeoutError, OSError, Exception) as e:  # noqa: BLE001 - optional nicety
             log.debug("element scan failed: %s", e)
         finally:
@@ -560,12 +670,18 @@ class StickFigureApp:
 
     # -- voice ---------------------------------------------------------------------------------
 
-    def _say(self, text: str, hold: float | None = None) -> None:
+    def _say(self, text: str, hold: float | None = None, log: bool = True) -> None:
+        """Say something out loud (bubble + voice). `log`: also write it in the chat as an aside (off for lines
+        the caller already puts in the chat itself, like questions and replies)."""
         if self._in_lounge:
             self.lounge.say(md_plain(text))
         self.bubble.say(self._bubble_text(text), hold)
-        if not text.lower().startswith("zzz"):  # snoring stays in the bubble
-            self.speaker.say(md_plain(text)[:700])
+        if text.lower().startswith("zzz"):  # snoring stays in the bubble
+            return
+        self.speaker.say(md_plain(text)[:700])
+        if log:
+            self.memory.add_message("aside", md_plain(text))
+            self.chat.add_aside(md_plain(text))
 
     def _think(self) -> None:
         self.speaker.stop()  # a new reply is coming: don't talk over it
@@ -650,6 +766,8 @@ class StickFigureApp:
             "stt_model": self.cfg.stt_model, "mischief": self.mischief.enabled, "supervised": self.cfg.supervised,
             "notice_activity": self.companion.notice_enabled,
             "adventures": self.adventure.enabled,
+            "awareness": self.awareness.enabled,
+            "temperature": self.companion.temperature,
             "chat_model": self.cfg.chat_model,
         }
 
@@ -676,6 +794,7 @@ class StickFigureApp:
 
         def closed() -> None:
             self.build_mode = None
+            self.growth.first("first_gift_build", "The day my Animator built blocks for me in build mode")
             self._say(random.choice(["Ooh, nice build!", "I'm gonna climb all over that.", "Neat! Is that for me?"]))
 
         self.build_mode.closed.connect(closed)
@@ -702,6 +821,8 @@ class StickFigureApp:
         self.act_mischief.setChecked(values["mischief"])
         self.companion.notice_enabled = values["notice_activity"]
         self.act_adventure.setChecked(values["adventures"])
+        self.awareness.enabled = values["awareness"]
+        self._set_temperature(values["temperature"])
         if needs_restart:
             self.bubble.say("Some of those changes kick in after a restart!", hold=4)
 
@@ -776,7 +897,12 @@ class StickFigureApp:
         # Stand on text boxes, buttons, images... of the window in front (re-read every couple of seconds).
         self._element_timer = QTimer()
         self._element_timer.timeout.connect(lambda: asyncio.ensure_future(self._scan_elements()))
-        self._element_timer.start(2000)
+        self._element_timer.start(750)
+        # Awareness: sample the window in front ~2x a second; the focused element every 2 s.
+        self._aware_timer = QTimer()
+        self._aware_timer.timeout.connect(self._sense)
+        self._aware_timer.start(500)
+        self._sense_n = 0
         self._scanning = False
         self._scan_skip = 0
         self._mood_timer.start(2000)
@@ -919,6 +1045,7 @@ class StickFigureApp:
                 self._maybe_enter_lounge()
             self.companion.update(dt)
             self.blocks.update(dt, self.world.surface_for_shape(self.fig.ground_shape))
+            self._update_rivals(dt)
             self.block_views.update(dt)
             self.anim.talk = self.speaker.level
             self.anim.update(dt)
@@ -930,6 +1057,14 @@ class StickFigureApp:
         if self.fig.riding and win32.mouse_down():
             self.fig.stop_ride()
         self.fig_window.sync()
+        # Always visible: other always-on-top windows (the chat, build mode, other apps) raised later would
+        # cover the figure, so put it (and its speech bubble) back on top a few times a second.
+        if t0 >= self._raise_next:
+            self._raise_next = t0 + 0.25
+            for w in (self.fig_window, self.bubble):
+                hwnd = getattr(w, "hwnd", 0)
+                if hwnd and w.isVisible():
+                    win32.bring_to_top(hwnd)
         bx, by = self.fig.body.position
         hx, hy = self.anim.pose["head"]
         self.bubble.follow((bx + hx, by + hy), self.anim.P.head_r, self.world.monitors,
@@ -957,7 +1092,7 @@ class StickFigureApp:
             f"frame {self._frame_ms:5.2f} ms   physics {self._step_ms:5.2f} ms",
             f"tracker refresh {self.tracker.refresh_ms:5.2f} ms",
             f"windows {len(self.tracker.snapshot.windows)}   platforms {len(self.world.platforms)}   blocks {len(self.world.blocks)}",
-            f"anim {self.anim.state.name}   task {self.brain.task_name}",
+            f"anim {getattr(self.anim.state, 'name', self.anim.state)}   task {self.brain.task_name}",
             f"mood {e.label()}  E{e.energy:.2f} C{e.curiosity:.2f} A{e.affection:.2f} N{e.annoyance:.2f}",
             f"pos ({f.body.position.x:.0f}, {f.body.position.y:.0f})   vel ({f.body.velocity.x:.0f}, {f.body.velocity.y:.0f})",
             f"on {self.world.surface_for_shape(f.ground_shape)}",
@@ -984,6 +1119,12 @@ def _setup_logging() -> None:
 
 def main() -> int:
     _setup_logging()
+    try:  # its own taskbar identity, so Windows uses The Third Coming's icon instead of Python's
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("TechWA1.TheThirdComing")
+    except (AttributeError, OSError):
+        pass
     qapp = QApplication(sys.argv)
     qapp.setQuitOnLastWindowClosed(False)
     qapp.setApplicationName("The Third Coming")

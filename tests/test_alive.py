@@ -48,7 +48,7 @@ def test_element_platform_picking():
            El("Edit", Rect(200, 500, 600, 530), is_password=True),
            El("Image", Rect(800, 400, 1100, 700))]
     got = pick_element_platforms(els, win)
-    assert [(r.left, r.top) for r in got] == [(200, 300), (800, 400)]
+    assert [(e.rect.left, e.rect.top) for e in got] == [(200, 300), (800, 400)]
 
 
 def test_figure_stands_on_a_text_box_and_it_moves_with_the_window():
@@ -107,7 +107,7 @@ def test_mind_picks_an_action(tmp_path):
 
     agent = Agent(Mind(), Memory(tmp_path / "m.db", fake_embed), Emotion())
     r = asyncio.run(agent.think(SIT, {"user": "active"}, ["dance"]))
-    assert r == {"thought": "The cursor looks fun.", "action": "ride_cursor", "say": "Hop on!"}
+    assert r == {"thought": "The cursor looks fun.", "action": "ride_cursor", "target": -1, "say": "Hop on!"}
 
 
 def test_learns_a_lesson_and_recalls_it_for_a_similar_task(tmp_path):
@@ -126,3 +126,87 @@ def test_learns_a_lesson_and_recalls_it_for_a_similar_task(tmp_path):
     assert lessons and "New Tab" in lessons[0]
     # lessons don't leak into the conversation recall
     assert asyncio.run(agent._episodes_for("new tab chrome")) == []
+
+
+def test_climbs_onto_an_element_of_a_maximized_window():
+    """Maximized windows have no top-edge platform, so their text boxes hang off the static body."""
+    world, fig = make()
+    brain = Brain(fig, world, BlockManager(world))
+    brain.enabled = False
+    fig.body.position = (600, 900)
+    sim(world, fig, 1.0, brain=brain)
+    world.set_element_platforms(99, [Rect(900, 820, 1300, 850)], ["Edit 'Search'"])  # ~210 px up: a jump
+    brain.command("climb_element")
+    sim(world, fig, 10, brain=brain)
+    assert world.surface_for_shape(fig.ground_shape)[0] == "elem"
+
+
+def test_builds_stairs_to_a_high_element():
+    world, fig = make()
+    brain = Brain(fig, world, BlockManager(world))
+    brain.enabled = False
+    fig.body.position = (600, 900)
+    sim(world, fig, 1.0, brain=brain)
+    world.set_element_platforms(99, [Rect(900, 560, 1300, 590)], ["Edit 'Search'"])  # ~480 px up: too high
+    brain.command("climb_element")
+    sim(world, fig, 25, brain=brain)
+    assert world.surface_for_shape(fig.ground_shape)[0] == "elem"
+    assert len(world.blocks) >= 1  # it had to build to get there
+
+
+def test_builds_up_to_a_pointer_hovering_in_the_air_and_grabs_it():
+    world, fig = make()
+    brain = Brain(fig, world, BlockManager(world))
+    brain.enabled = False
+    fig.body.position = (600, 900)
+    sim(world, fig, 1.0, brain=brain)
+    pointer = (800.0, 520.0)  # way above its reach, nothing under it but air
+    brain.command("reach_cursor")
+    sim(world, fig, 5, cursor=lambda t: pointer, brain=brain)  # (it lets go by itself after 6-20 s)
+    assert fig.riding
+    assert len(world.blocks) >= 2
+
+
+def test_ledges_update_in_place_and_it_drops_when_its_ledge_vanishes():
+    world, fig = make()
+    a, b = Rect(700, 800, 1000, 801), Rect(1200, 700, 1500, 701)
+    world.set_element_platforms(7, [a, b], ["Edit 'Search'", "Button 'Go'"])
+    fig.body.position = (850, 700)
+    sim(world, fig, 1.0)
+    key = world.surface_for_shape(fig.ground_shape)
+    assert key[0] == "elem"
+    # a refresh where its ledge is unchanged: nothing moves, same ledge id (no hiccup underfoot)
+    assert world.set_element_platforms(7, [a, b], ["Edit 'Search'", "Button 'Go'"]) is False
+    assert world.set_element_platforms(7, [a], ["Edit 'Search'"]) is True  # only the other one went
+    sim(world, fig, 0.3)
+    assert world.surface_for_shape(fig.ground_shape) == key
+    # the page scrolled: its ledge is gone, so it drops to the taskbar
+    world.set_element_platforms(7, [Rect(700, 500, 1000, 501)], ["Edit 'Search'"])
+    sim(world, fig, 1.5)
+    assert world.surface_for_shape(fig.ground_shape)[0] == "floor"
+
+
+def test_ledges_skip_invisible_containers_and_covered_parts():
+    from stickfigure.world.elements import visible_ledges
+
+    win = Rect(0, 0, 1920, 1040)
+    els = [El("Pane", Rect(100, 300, 900, 600)), El("Group", Rect(100, 400, 900, 700)),  # invisible boxes
+           El("Edit", Rect(100, 500, 900, 530))]
+    picked = pick_element_platforms(els, win)
+    assert [e.role for e in picked] == ["Edit"]
+    chat = Rect(600, 450, 1000, 900)  # our chat window sits over the right part of the text box
+    ledges = visible_ledges(picked, [chat])
+    assert [(r.left, r.right) for r, _ in ledges] == [(100, 600)]
+    assert visible_ledges(picked, [Rect(0, 0, 1920, 1040)]) == []  # fully covered: no ledge at all
+
+
+def test_heads_home_to_the_ground():
+    world, fig = make(Rect(800, 700, 1400, 1040))
+    brain = Brain(fig, world, BlockManager(world))
+    brain.enabled = False
+    fig.body.position = (1000, 600)
+    sim(world, fig, 1.0, brain=brain)
+    assert world.surface_for_shape(fig.ground_shape)[0] == "win"
+    brain._start("go_home", brain._go_home())
+    sim(world, fig, 8, brain=brain)
+    assert world.surface_for_shape(fig.ground_shape)[0] == "floor"
