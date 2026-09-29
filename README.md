@@ -4,7 +4,7 @@
 
  Simply download the installer and run it.
 
- **Total storage requirement with Ollama: ~3 GB**
+ **Total storage requirement with Ollama: ~15 GB**
 
  ## Features
 
