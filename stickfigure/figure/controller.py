@@ -55,6 +55,12 @@ class Figure:
         self.pose_mode: str | None = None  # a named pose while grounded (fight moves: "punch", "block"...)
         self.air_pose: str | None = None  # a named pose while airborne ("flykick", "tuck"...)
         self.weapon: str | None = None  # "sword" | "staff" | "pickaxe" while sparring
+        # Flight (sparring only): gravity off, passes through everything, steered toward fly_target.
+        self.flying = False
+        self.fly_target: tuple[float, float] | None = None  # None = coast (knockback), slowing down
+        self.fly_speed = 900.0
+        self.tilt = 0.0  # whole-body lean for named poses (flying horizontally)
+        self.speed_override: float | None = None  # sprinting in a fight
 
         self.grounded = False
         self.ground_shape: pymunk.Shape | None = None
@@ -124,6 +130,30 @@ class Figure:
         if abs(vx) > 5:
             self.facing = 1 if vx > 0 else -1
 
+    def fly(self, target: tuple[float, float] | None, speed: float = 900.0) -> None:
+        """Take off (or change course): steer toward `target`, or coast with None."""
+        if not self.flying:
+            self.flying = True
+            self.shape.filter = pymunk.ShapeFilter(categories=CAT_FIGURE, mask=0)
+            self.grounded = False
+            self.ground_shape = None
+            self.world.carry_target = None
+            self.move_target_x = None
+            self.activity = Activity.NONE
+            self.jumping = False
+        self.fly_target = target
+        self.fly_speed = speed
+
+    def land(self) -> None:
+        """Stop flying: gravity takes over and it drops onto whatever is below (on its feet)."""
+        if not self.flying:
+            return
+        self.flying = False
+        self.fly_target = None
+        self.tilt = 0.0
+        self.shape.filter = self._solid_filter
+        self._jump_grace = 0.05
+
     def drop_through(self) -> bool:
         """Fall through the one-way platform we're standing on."""
         if self.ground_shape is None or self.ground_shape.collision_type != CT_PLATFORM:
@@ -136,6 +166,9 @@ class Figure:
 
     def grab(self, cursor: tuple[float, float]) -> None:
         self.riding = False
+        self.flying = False
+        self.fly_target = None
+        self.tilt = 0.0
         self.grabbed = True
         self.move_target_x = None
         self.activity = Activity.NONE
@@ -240,13 +273,29 @@ class Figure:
             self.shape.surface_velocity = (0, 0)
             return
 
+        if self.flying:
+            vx, vy = self.body.velocity
+            if self.fly_target is not None:
+                dx, dy = self.fly_target[0] - self.body.position.x, self.fly_target[1] - self.body.position.y
+                dist = math.hypot(dx, dy)
+                speed = min(self.fly_speed, dist * 7)
+                want = (dx / dist * speed, dy / dist * speed) if dist > 0.5 else (0.0, 0.0)
+                k = min(1.0, dt * 14)
+                vx, vy = vx + (want[0] - vx) * k, vy + (want[1] - vy) * k
+            else:
+                drag = math.exp(-2.2 * dt)
+                vx, vy = vx * drag, vy * drag
+            self.body.velocity = (vx, vy - self.cfg.gravity * dt)  # cancel this step's gravity
+            self.shape.surface_velocity = (0, 0)
+            return
+
         target_vx = 0.0
         can_move = self.grounded and self.knocked <= 0 and self.activity in (Activity.NONE, Activity.WAVE, Activity.LOOK)
         if can_move and self.move_target_x is not None:
             dx = self.move_target_x - self.body.position.x
             if abs(dx) > 2:
                 self.facing = 1 if dx > 0 else -1
-                top = (self.cfg.run_speed if self.run else self.cfg.walk_speed) * self.speed_scale
+                top = self.speed_override or (self.cfg.run_speed if self.run else self.cfg.walk_speed) * self.speed_scale
                 target_vx = self.facing * min(top, abs(dx) * 8)  # ease into the target
         # Pymunk platformer trick: surface velocity + friction walks relative to whatever we stand on.
         self.shape.surface_velocity = (-target_vx, 0) if self.grounded else (0, 0)
@@ -266,7 +315,7 @@ class Figure:
         was_grounded = self.grounded
         vy_before = self._last_vy
         self.grounded = (ground_shape is not None and not self.grabbed and not self.riding
-                         and self._jump_grace <= 0)
+                         and not self.flying and self._jump_grace <= 0)
         self.ground_shape = ground_shape if self.grounded else None
         body = ground_shape.body if self.grounded else None
         self.world.carry_target = body if body is not None and body.body_type == pymunk.Body.KINEMATIC else None
@@ -312,7 +361,7 @@ class Figure:
         self._clear_passthrough()
 
         x, y = self.body.position
-        if self.world.on_screen(x, y) or self.grabbed or self.riding:
+        if self.world.on_screen(x, y) or self.grabbed or self.riding or self.flying:
             self._offscreen_since = None
         elif self._offscreen_since is None:
             self._offscreen_since = time.perf_counter()

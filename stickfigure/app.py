@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import random
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -30,7 +31,7 @@ from stickfigure.awareness import Awareness
 from stickfigure.agent.memory import Memory
 from stickfigure.agent.ollama import Ollama, OllamaError
 from stickfigure.companion import Companion
-from stickfigure.config import CONFIG, save_settings
+from stickfigure.config import CONFIG, load_saved_settings, save_settings
 from stickfigure.figure.animator import Animator
 from stickfigure.figure.brain import Brain
 from stickfigure.figure.controller import Figure
@@ -48,7 +49,7 @@ from stickfigure.overlay.speech_bubble import SpeechBubble
 from stickfigure.safety.killswitch import KillSwitch
 from stickfigure.figure.controller import Activity
 from stickfigure.safety.policy import WindowInfo, window_problem
-from stickfigure import firstrun
+from stickfigure import firstrun, updater
 from stickfigure.ui.build_mode import BuildMode
 from stickfigure.ui.setup_window import SetupWindow
 from stickfigure.ui.chat_window import ChatWindow
@@ -65,6 +66,21 @@ from stickfigure.world.elements import pick_element_platforms, visible_ledges
 from stickfigure.world.physics import World
 
 log = logging.getLogger("stickfigure")
+
+
+def _relaunch() -> None:
+    """Start a fresh copy of the app (after this one exits)."""
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    if getattr(sys, "frozen", False):
+        args = [sys.executable]
+    else:
+        exe = sys.executable
+        pythonw = os.path.join(os.path.dirname(exe), "pythonw.exe")
+        args = [pythonw if os.path.exists(pythonw) else exe, os.path.abspath(sys.argv[0]), *sys.argv[1:]]
+    try:
+        subprocess.Popen(args, creationflags=flags, close_fds=True)
+    except OSError:
+        log.exception("restart failed")
 
 
 def _app_icon(anim: Animator) -> QIcon:
@@ -254,6 +270,11 @@ class StickFigureApp:
         self._acc = 0.0
         self._paused = False
         self._quitting = False
+        self._check_updates, self._auto_update = self.cfg.check_updates, self.cfg.auto_update
+        self._update_declined: set[str] = set()  # versions you said "not now" to (asked again next launch)
+        self._updating = False
+        self._pending_installer = None  # run as the app exits (see _shutdown)
+        self._restart_after = False
         self._hidden_for_fullscreen = False
         self._riding_click_through = False
         self._raise_next = 0.0
@@ -315,6 +336,9 @@ class StickFigureApp:
         stop_task = QAction("Stop current task  (Ctrl+Alt+Pause)", menu)
         stop_task.triggered.connect(lambda: self.actions.stop("you pressed Stop"))
         menu.addAction(stop_task)
+        updates = QAction("Check for updates", menu)
+        updates.triggered.connect(lambda: asyncio.ensure_future(self.check_for_updates(manual=True)))
+        menu.addAction(updates)
         setup = QAction("Check requirements (Ollama & models)…", menu)
         setup.triggered.connect(lambda: self.open_setup())
         menu.addAction(setup)
@@ -788,7 +812,8 @@ class StickFigureApp:
             "adventures": self.adventure.enabled,
             "awareness": self.awareness.enabled,
             "temperature": self.companion.temperature,
-            "chat_model": self.cfg.chat_model,
+            "chat_model": load_saved_settings().get("chat_model", self.cfg.chat_model),
+            "check_updates": self._check_updates, "auto_update": self._auto_update,
         }
 
     def open_settings(self) -> None:
@@ -798,7 +823,8 @@ class StickFigureApp:
 
         self._exit_lounge("settings")
         self.open_chat()
-        self.chat.show_settings(SettingsPanel(self._current_settings(), self.ui_scale, self._apply_settings, preview))
+        self.chat.show_settings(SettingsPanel(self._current_settings(), self.ui_scale, self._apply_settings, preview,
+                                              lambda: asyncio.ensure_future(self.check_for_updates(manual=True))))
 
     def open_build_mode(self) -> None:
         """Place/remove blocks yourself on the monitor the figure is on."""
@@ -843,6 +869,7 @@ class StickFigureApp:
         self.act_adventure.setChecked(values["adventures"])
         self.awareness.enabled = values["awareness"]
         self._set_temperature(values["temperature"])
+        self._check_updates, self._auto_update = values["check_updates"], values["auto_update"]
         if needs_restart:
             self.bubble.say("Some of those changes kick in after a restart!", hold=4)
 
@@ -939,6 +966,7 @@ class StickFigureApp:
         self.speaker.warm_up()  # downloads Kokoro on first run
         self.listener.warm_up()  # downloads Whisper on first run
         asyncio.ensure_future(self._first_run())
+        asyncio.ensure_future(self._update_loop())
         log.info("Running. %d platforms, %d monitors.", len(self.world.platforms), len(self.world.monitors))
 
     async def _first_run(self) -> None:
@@ -968,7 +996,12 @@ class StickFigureApp:
         self.setup_window = SetupWindow(self.ui_scale, _app_icon(self.anim))
 
         def done(ready: bool) -> None:
+            restart = self.setup_window is not None and self.setup_window.restart_needed
             self.setup_window = None
+            if ready and restart:  # a different brain was picked: load it fresh
+                self._say("New brain installed! Restarting to use it, brb.")
+                QTimer.singleShot(1500, self.restart)
+                return
             if ready:
                 self._say("Ahh, I can think again! Hi!")
                 asyncio.ensure_future(self._warm_up())
@@ -994,6 +1027,73 @@ class StickFigureApp:
         except Exception:  # never let a startup failure vanish silently inside a task
             log.exception("model warm-up failed")
             self.bubble.say("Something went wrong waking my brain up (see the log).", hold=6)
+
+    # -- updates ---------------------------------------------------------------------------------------------------
+
+    async def _update_loop(self) -> None:
+        """Installed copies check GitHub for a newer release a minute after starting, then every 6 hours."""
+        if not updater.can_update():
+            return
+        await asyncio.sleep(60)
+        while not self._quitting:
+            if self._check_updates:
+                await self.check_for_updates(manual=False)
+            await asyncio.sleep(6 * 3600)
+
+    async def check_for_updates(self, manual: bool = True) -> None:
+        if self._updating:
+            return
+        if not updater.can_update():
+            if manual:
+                self._say("I'm running from source, so I update with git (not the installer).")
+            return
+        current = updater.current_version()
+        try:
+            rel = await asyncio.to_thread(updater.check, current)
+        except Exception as e:  # noqa: BLE001 - offline, rate limited...
+            log.warning("update check failed: %s", e)
+            if manual:
+                self._say("Couldn't reach GitHub to check for updates. Try again in a bit?")
+            return
+        if rel is None:
+            if manual:
+                self._say(f"I'm up to date (v{current}).")
+            return
+        log.info("update available: v%s (running v%s)", rel.version, current)
+        if not manual and rel.version in self._update_declined:
+            return
+        if self._auto_update and not manual:
+            # Only while you're away and it's not in the middle of something; otherwise try again later.
+            if win32.user_idle_seconds() < 300 or self.actions.busy:
+                return
+        else:
+            ok = await self.companion.ask_yes_no(
+                f"There's a new version of me: v{rel.version} (you have v{current}). Update now? I'll disappear for "
+                "a few seconds and come right back, memories and all.")
+            if not ok:
+                self._update_declined.add(rel.version)
+                self._say("Okay, later then. (Tray menu > Check for updates whenever you want it.)")
+                return
+        await self._install_update(rel)
+
+    async def _install_update(self, rel: "updater.Release") -> None:
+        self._updating = True
+        try:
+            self._say(f"Downloading v{rel.version}...")
+            path = await asyncio.to_thread(updater.download, rel)
+        except Exception as e:  # noqa: BLE001
+            log.warning("update download failed: %s", e)
+            self._say(f"The update download failed ({e}). I'll try again later.")
+            self._updating = False
+            return
+        self._say("Got it! Updating now, brb.")
+        self._pending_installer = path
+        await asyncio.sleep(2.0)
+        self.quit()
+
+    def restart(self) -> None:
+        self._restart_after = True
+        self.quit()
 
     def quit(self) -> None:
         if self._quitting:
@@ -1026,6 +1126,13 @@ class StickFigureApp:
         self.perception.close()
         self.element_reader.close()
         await self.ollama.close()
+        if self._pending_installer is not None:
+            try:
+                updater.launch_installer(self._pending_installer)  # updates in place and starts the new version
+            except OSError:
+                log.exception("couldn't start the update installer")
+        elif self._restart_after:
+            _relaunch()
         self.qapp.quit()
 
     def _toggle_debug(self, on: bool) -> None:

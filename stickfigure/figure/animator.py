@@ -145,7 +145,8 @@ class Animator:
         f = self.fig
         if isinstance(state, str):  # a named pose
             pose = mirror(getattr(self, f"_pose_{state}", self._idle)(), f.facing)
-            return rotate(pose, f.tumble_angle) if f.tumbling else pose  # e.g. a somersault
+            angle = f.tumble_angle if f.tumbling else getattr(f, "tilt", 0.0)  # a somersault, or leaning into flight
+            return rotate(pose, angle) if angle else pose
         builders = {
             Anim.IDLE: self._idle,
             Anim.WALK: lambda: self._gait(run=False),
@@ -564,6 +565,25 @@ class Animator:
         H, half = self.P.height, self.P.half
         return self._assemble((0.0, half - 0.9 * self._leg), 0.5, (-0.25 * H, half - 0.05 * H),
                               (-0.12 * H, half - 0.1 * H), (0.05 * H, 0.1 * H), (0.33 * H, 0.05 * H))
+
+    def _pose_land(self) -> Pose:
+        """A superhero landing: deep crouch."""
+        return self._crouch(1.0)
+
+    def _pose_fly(self) -> Pose:
+        """Flying: straight as an arrow, front fist leading (the body is tilted into the flight by `tilt`)."""
+        H, half = self.P.height, self.P.half
+        sway = math.sin(self.time * 9) * 0.015 * H
+        return self._assemble((0.0, half - 0.97 * self._leg), 0.0, (-0.03 * H, half + sway), (0.02 * H, half - 0.04 * H),
+                              (-0.06 * H, 0.18 * H), (0.04 * H, -0.42 * H), elbow=-1.0, elbow_f=-1.0)
+
+    def _pose_hover(self) -> Pose:
+        """Floating in a fighting stance: knees drawn up a little, feet dangling, fists up."""
+        H, half = self.P.height, self.P.half
+        bob = math.sin(self.time * 5) * 0.012 * H
+        return self._assemble((0.0, half - 0.9 * self._leg + bob), 0.08, (-0.1 * H, half - 0.04 * H + bob),
+                              (0.06 * H, half - 0.12 * H + bob), (0.06 * H, 0.02 * H), (0.15 * H, -0.06 * H),
+                              elbow=-1.0, elbow_f=-1.0)
 
     def _pose_tuck(self) -> Pose:
         """Knees to chest: a somersault."""
