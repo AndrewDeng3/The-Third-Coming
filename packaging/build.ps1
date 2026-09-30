@@ -12,6 +12,8 @@ $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
 if (-not $Version) { $Version = (Get-Content packaging\VERSION -Raw).Trim() + ".0" }
 Write-Host "Building version $Version"
+# Baked into the app so it knows which release it is (the self-updater compares it with GitHub's latest).
+Set-Content -Path stickfigure\_version.py -Value "VERSION = `"$Version`"" -Encoding utf8
 
 & .\.venv\Scripts\python -m pytest -q
 if ($LASTEXITCODE -ne 0) { throw "tests failed; not building" }

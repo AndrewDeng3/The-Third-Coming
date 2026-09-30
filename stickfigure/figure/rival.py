@@ -76,6 +76,7 @@ class _Puppet:
         self.pose_mode: str | None = "stance"
         self.air_pose: str | None = None
         self.facing = 1
+        self.tilt = 0.0
 
     @property
     def tumbling(self) -> bool:
@@ -100,6 +101,11 @@ class Rival:
         self.age = 0.0
         self.sparks: list[tuple[float, float, float]] = []  # (x, y, age) hit flashes
         self.weapon: str | None = None
+        self.run_speed = 620.0  # fighters sprint at each other
+        self.flying = False
+        self.fly_target: tuple[float, float] | None = None  # body center to steer to (None = coast)
+        self.fly_speed = 900.0
+        self.bounds: tuple[float, float] | None = None  # the arena floor's ends (it can't slide off them)
         self.puppet.facing = facing
         self._sync()
 
@@ -132,6 +138,25 @@ class Rival:
         self.puppet.tumble_spin = spin
         self.walk_target = None
 
+    def fly(self, target: tuple[float, float] | None, speed: float = 900.0) -> None:
+        """Take off / steer toward a body-center position anywhere on screen (None = coast, slowing down)."""
+        if not self.flying:
+            self.flying = True
+            self.walk_target = None
+        self.fly_target = target
+        self.fly_speed = speed
+
+    def land(self) -> None:
+        """Stop flying and drop back to the floor."""
+        self.flying = False
+        self.fly_target = None
+        self.puppet.tilt = 0.0
+        self.vy = max(self.vy, 0.0) if self.lift > 0 else self.vy
+
+    @property
+    def y(self) -> float:
+        return self.floor_y - self.lift - self.half
+
     def vanish(self) -> None:
         self.fading = True
 
@@ -149,15 +174,23 @@ class Rival:
         self.alpha = max(0.0, self.alpha - dt * 1.4) if self.fading else min(1.0, self.alpha + dt * 4)
         if self.fading and self.alpha <= 0:
             self.done = True
+        if self.flying:
+            self._fly(dt)
+            return
         walking = 0.0
         if self.walk_target is not None and self.lift <= 0 and abs(self.vx) < 30:
             d = self.walk_target - self.x
             if abs(d) > 3:
-                walking = math.copysign(min(210.0, abs(d) * 6), d)
+                walking = math.copysign(min(self.run_speed, abs(d) * 7), d)
                 self.puppet.facing = 1 if d > 0 else -1
             else:
                 self.walk_target = None
         self.x += (self.vx + walking) * dt
+        if self.bounds is not None and not self.fading:
+            lo, hi = self.bounds
+            if not lo <= self.x <= hi:
+                self.x = min(max(self.x, lo), hi)
+                self.vx = 0.0
         self.vx *= math.exp(-6 * dt) if self.lift <= 0 else 1.0  # friction on the ground
         if self.lift > 0 or self.vy < 0:
             self.vy += self.cfg.gravity * dt
@@ -169,6 +202,29 @@ class Rival:
                 self.puppet.air_pose = None
         self.puppet.grounded = self.lift <= 0 and self.vy >= 0
         self.puppet.body.velocity.x = walking + self.vx
+        self.puppet.body.velocity.y = self.vy
+        self.sparks = [(x, y, a + dt) for x, y, a in self.sparks if a + dt < 0.35]
+        self._sync()
+        self.anim.update(dt)
+
+    def _fly(self, dt: float) -> None:
+        if self.fly_target is not None:
+            dx, dy = self.fly_target[0] - self.x, self.fly_target[1] - self.y
+            dist = math.hypot(dx, dy)
+            speed = min(self.fly_speed, dist * 7)
+            wx, wy = (dx / dist * speed, dy / dist * speed) if dist > 0.5 else (0.0, 0.0)
+            k = min(1.0, dt * 14)
+            self.vx += (wx - self.vx) * k
+            self.vy += (wy - self.vy) * k
+        else:
+            drag = math.exp(-2.2 * dt)
+            self.vx *= drag
+            self.vy *= drag
+        self.x += self.vx * dt
+        self.lift = max(0.0, self.lift - self.vy * dt)  # never below its own floor
+        self.puppet.tumble_angle += self.puppet.tumble_spin * dt
+        self.puppet.grounded = False
+        self.puppet.body.velocity.x = self.vx
         self.puppet.body.velocity.y = self.vy
         self.sparks = [(x, y, a + dt) for x, y, a in self.sparks if a + dt < 0.35]
         self._sync()

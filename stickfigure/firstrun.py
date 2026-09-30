@@ -22,8 +22,81 @@ from stickfigure.config import CONFIG, Config
 
 OLLAMA_SETUP_URL = "https://ollama.com/download/OllamaSetup.exe"
 # Rough download sizes, for the setup window (GB).
-MODEL_SIZES = {"qwen3:14b": 9.3, "qwen3:8b": 5.2, "embeddinggemma": 0.6, "qwen2.5:7b-instruct": 4.7, "llama3.2:3b": 2.0,
-               "qwen2.5-coder:7b": 4.7}
+MODEL_SIZES = {"qwen3:14b": 9.3, "qwen3:8b": 5.2, "qwen3:4b": 2.5, "embeddinggemma": 0.6, "qwen2.5:7b-instruct": 4.7,
+               "llama3.2:3b": 2.0, "qwen2.5-coder:7b": 4.7}
+
+
+@dataclass(frozen=True)
+class Brain:
+    label: str
+    model: str
+    gb: float
+    note: str
+    min_vram: float  # GB of graphics memory it runs well in
+
+
+# The choice of "brain" (one model does everything). Bigger = smarter, but a bigger download and slower on small GPUs.
+BRAINS = (
+    Brain("Light", "qwen3:4b", 2.5, "smallest download, runs on any PC", 0.0),
+    Brain("Balanced", "qwen3:8b", 5.2, "smarter; best with 8 GB+ of graphics memory", 7.0),
+    Brain("Smart", "qwen3:14b", 9.3, "smartest; needs 12 GB+ of graphics memory", 11.0),
+)
+
+
+def gpu_memory_gb() -> float:
+    """The largest graphics card's dedicated memory (GB), from the display drivers' registry info (0 if unknown)."""
+    try:
+        import winreg
+    except ImportError:
+        return 0.0
+    best = 0
+    key_path = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as cls:
+            for i in range(64):
+                try:
+                    sub = winreg.EnumKey(cls, i)
+                except OSError:
+                    break
+                try:
+                    with winreg.OpenKey(cls, sub) as k:
+                        for name in ("HardwareInformation.qwMemorySize", "HardwareInformation.MemorySize"):
+                            try:
+                                v, _ = winreg.QueryValueEx(k, name)
+                            except OSError:
+                                continue
+                            if isinstance(v, bytes):
+                                v = int.from_bytes(v[:8], "little")
+                            best = max(best, int(v))
+                except OSError:
+                    continue
+    except OSError:
+        return 0.0
+    return best / 2**30
+
+
+def recommended_brain(vram_gb: float | None = None) -> Brain:
+    vram = gpu_memory_gb() if vram_gb is None else vram_gb
+    fits = [b for b in BRAINS if b.min_vram <= vram]
+    return fits[-1] if fits else BRAINS[0]
+
+
+def brain_for(model: str) -> Brain | None:
+    return next((b for b in BRAINS if b.model == model), None)
+
+
+def delete_model(model: str, url: str = CONFIG.ollama_url) -> None:
+    r = httpx.request("DELETE", f"{url}/api/delete", json={"model": model}, timeout=30)
+    r.raise_for_status()
+
+
+def unused_brains(chosen: str, url: str = CONFIG.ollama_url) -> list[Brain]:
+    """Other brain sizes that are downloaded but not in use (they can be removed to free disk space)."""
+    try:
+        have = installed_models(url)
+    except (httpx.HTTPError, ValueError, KeyError):
+        return []
+    return [b for b in BRAINS if b.model != chosen and _norm(b.model) in have]
 
 Progress = Callable[[float, str], None]  # (fraction 0..1, status text)
 

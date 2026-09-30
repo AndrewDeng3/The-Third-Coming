@@ -90,6 +90,8 @@ class Brain(SparMixin):
         if self.task is not None:
             self.task.close()
         self.fig.pose_mode = self.fig.air_pose = self.fig.weapon = None
+        self.fig.speed_override = None
+        self.fig.land()
         if self.fig.riding:
             self.fig.stop_ride()
         self._finish()

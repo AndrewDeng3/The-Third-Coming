@@ -109,6 +109,10 @@ class Config:
     listen_silence: float = 0.9  # seconds of quiet that end an utterance
     listen_max: float = 20.0
     color: str = "Orange"
+    # Updates (installed copies): check GitHub for a newer release now and then; ask in chat before installing,
+    # unless auto_update is on (then it installs by itself while you're away from the computer).
+    check_updates: bool = True
+    auto_update: bool = False
 
     data_dir: str = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "StickFigure")
 
@@ -121,6 +125,7 @@ class Config:
 USER_SETTINGS = (
     "user_name", "color", "voice_enabled", "tts_voice", "tts_speed", "tts_volume", "stt_model",
     "mischief", "supervised", "chat_model", "notice_activity", "adventures", "awareness", "temperature",
+    "check_updates", "auto_update",
 )
 
 
@@ -154,6 +159,9 @@ def load_config() -> Config:
                 changes[key] = type(default)(saved[key])
             except (TypeError, ValueError):
                 pass
+    if "chat_model" in changes:  # one brain: the chosen model does chat, memory, and tasks (no model swapping)
+        m = changes["chat_model"]
+        changes.update(extract_model=m, action_model=m, code_model=m)
     return replace(base, **changes)
 
 
@@ -164,6 +172,11 @@ def load_saved_settings(cfg: Config | None = None) -> dict:
         return saved if isinstance(saved, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def update_settings(changes: dict, cfg: Config | None = None) -> None:
+    """Change some saved settings, keeping the rest."""
+    save_settings({**load_saved_settings(cfg), **changes}, cfg)
 
 
 def save_settings(values: dict, cfg: Config | None = None) -> None:

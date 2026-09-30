@@ -54,7 +54,7 @@ def test_a_full_sparring_match_plays_out_and_cleans_up():
                 seen_poses.add(fig.pose_mode)
             knocked.append(fig.knocked > 0)
 
-        sim(world, fig, brain, rivals, 25, watch)
+        sim(world, fig, brain, rivals, 120, watch)
         assert len(rivals) == 1
         r = rivals[0]
         assert r.done, f"seed {seed}: the rival should have gone"
@@ -110,7 +110,7 @@ def test_blows_line_up_sparks_land_between_the_fighters_at_body_height():
         brain.fx = Spy()
         sim(world, fig, brain, rivals, 1.0)
         brain.command("fight")
-        sim(world, fig, brain, rivals, 40)
+        sim(world, fig, brain, rivals, 120)
         assert rivals and rivals[0].done
         H = fig.cfg.figure_height
         from stickfigure.figure.sparring import strike_offset

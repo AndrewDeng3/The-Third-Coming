@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QSlider, QVBoxLayout, QWidget,
 )
 
+from stickfigure import firstrun, updater
 from stickfigure.config import CONFIG
 from stickfigure.names import NAME
 from stickfigure.overlay.render import COLORS
@@ -29,7 +30,7 @@ class SettingsPanel(QWidget):
     closed = Signal()  # Back or Save: return to the conversation
 
     def __init__(self, current: dict, scale: float, on_save: Callable[[dict, bool], None],
-                 on_preview_voice: Callable[[str, float], None]):
+                 on_preview_voice: Callable[[str, float], None], on_check_updates: Callable[[], None] = lambda: None):
         super().__init__()
         self._on_save = on_save
         self._initial = dict(current)
@@ -80,7 +81,27 @@ class SettingsPanel(QWidget):
         self.supervised.setChecked(v["supervised"])
         self.autostart = QCheckBox("Start with Windows")
         self.autostart.setChecked(autostart.is_enabled())
-        self.chat_model = QLineEdit(v["chat_model"])
+        self.chat_model = QComboBox()
+        self.chat_model.setEditable(True)  # any Ollama model name works too
+        for b in firstrun.BRAINS:
+            self.chat_model.addItem(f"{b.model}", b.model)
+            self.chat_model.setItemData(self.chat_model.count() - 1, f"{b.label}: ~{b.gb:g} GB, {b.note}", Qt.ToolTipRole)
+        self.chat_model.setCurrentText(v["chat_model"])
+        self.chat_model.setToolTip("Its brain: qwen3:4b (light, ~2.5 GB), qwen3:8b (balanced, ~5.2 GB), qwen3:14b "
+                                   "(smartest, ~9.3 GB). A new one downloads after the restart; remove old ones from "
+                                   "the tray menu > Check requirements.")
+        self.check_updates = QCheckBox("Check for updates")
+        self.check_updates.setChecked(v.get("check_updates", True))
+        self.auto_update = QCheckBox("Install updates without asking (while I'm away)")
+        self.auto_update.setChecked(v.get("auto_update", False))
+        version = updater.current_version()
+        check_now = QPushButton("Check now", objectName="secondary")
+        check_now.clicked.connect(on_check_updates)
+        version_row = QHBoxLayout()
+        version_row.addWidget(QLabel(f"v{version}" if version else "running from source (update with git)"))
+        version_row.addStretch(1)
+        version_row.addWidget(check_now)
+        check_now.setEnabled(updater.can_update())
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -103,10 +124,14 @@ class SettingsPanel(QWidget):
         form.addRow("", self.adventures)
         form.addRow("", self.supervised)
         form.addRow("", self.autostart)
-        form.addRow("Chat model", self.chat_model)
-        note = QLabel("Listening, chat model and ask-every-step apply after a restart.", objectName="note")
+        form.addRow("Brain (model)", self.chat_model)
+        note = QLabel("Listening, brain and ask-every-step apply after a restart.", objectName="note")
         note.setWordWrap(True)
         form.addRow(note)
+        form.addRow(self._section("Updates"))
+        form.addRow("Version", version_row)
+        form.addRow("", self.check_updates)
+        form.addRow("", self.auto_update)
 
         body = QWidget()
         body.setLayout(form)
@@ -148,7 +173,9 @@ class SettingsPanel(QWidget):
             "temperature": self.temperature.value(),
             "adventures": self.adventures.isChecked(),
             "supervised": self.supervised.isChecked(),
-            "chat_model": self.chat_model.text().strip() or CONFIG.chat_model,
+            "chat_model": self.chat_model.currentText().strip() or CONFIG.chat_model,
+            "check_updates": self.check_updates.isChecked(),
+            "auto_update": self.auto_update.isChecked(),
         }
 
     def _save(self) -> None:

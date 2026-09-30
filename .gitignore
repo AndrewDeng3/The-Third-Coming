@@ -10,3 +10,6 @@ dist/
 
 # Local scratch
 scratch/
+
+# Written by packaging/build.ps1
+stickfigure/_version.py

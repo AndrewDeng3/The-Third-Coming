@@ -11,10 +11,13 @@ import logging
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
+from dataclasses import replace
+
+from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout,
+                               QWidget)
 
 from stickfigure import firstrun
-from stickfigure.config import CONFIG, Config
+from stickfigure.config import CONFIG, Config, load_saved_settings, update_settings
 
 log = logging.getLogger(__name__)
 
@@ -46,11 +49,14 @@ class SetupWindow(QWidget):
 
     def __init__(self, scale: float, icon: QIcon | None = None, cfg: Config = CONFIG):
         super().__init__(None, Qt.Window | Qt.WindowStaysOnTopHint)
-        self.cfg = cfg
+        self.started_with = cfg.chat_model  # the model this running copy loaded (a different pick needs a restart)
+        saved = load_saved_settings(cfg).get("chat_model")
+        chosen = saved or firstrun.recommended_brain().model  # a fresh install: pick what this PC's GPU can run
+        self.cfg = self._with_model(cfg, chosen)
         self.setWindowTitle("The Third Coming - setup")
         if icon is not None:
             self.setWindowIcon(icon)
-        self.resize(round(460 * scale), round(360 * scale))
+        self.resize(round(560 * scale), round(400 * scale))
         px = lambda v: f"{round(v * scale)}px"  # noqa: E731
         self.setStyleSheet(f"""
             QWidget {{ background: #1e1f24; color: #e8e8ee; font-family: 'Segoe UI'; font-size: 10pt; }}
@@ -62,18 +68,33 @@ class SetupWindow(QWidget):
             QProgressBar::chunk {{ background: #f7931e; border-radius: {px(3)}; }}
             QLabel#head {{ font-size: 14pt; font-weight: 700; }}
             QLabel#note {{ color: #9a9aa6; font-size: 9pt; }}
+            QComboBox {{ background: #2a2b32; border: 1px solid #3a3b44; border-radius: {px(6)}; padding: {px(4)} {px(8)}; }}
+            QComboBox QAbstractItemView {{ background: #2a2b32; selection-background-color: #f7931e; }}
         """)
         head = QLabel("Let's wake up The Third Coming", objectName="head")
         intro = QLabel("It thinks with local AI (nothing leaves this computer). A few things need downloading once:",
                        objectName="note")
         intro.setWordWrap(True)
-        grid = QGridLayout()
+        self.brain = QComboBox()
+        recommended = firstrun.recommended_brain()
+        for b in firstrun.BRAINS:
+            tag = "  - recommended for this PC" if b is recommended else ""
+            self.brain.addItem(f"{b.label} ({b.model}, ~{b.gb:g} GB){tag}", b.model)
+        if firstrun.brain_for(self.cfg.chat_model) is None:  # a custom model from Settings
+            self.brain.addItem(f"{self.cfg.chat_model} (your custom model)", self.cfg.chat_model)
+        self.brain.setCurrentIndex(max(0, self.brain.findData(self.cfg.chat_model)))
+        self.brain.currentIndexChanged.connect(self._brain_changed)
+        brain_row = QHBoxLayout()
+        brain_row.addWidget(QLabel("<b>Brain size</b>"))
+        brain_row.addWidget(self.brain, 1)
+        self.brain_note = QLabel("", objectName="note")
+        self.brain_note.setWordWrap(True)
+        self._show_brain_note()
+        self.grid = grid = QGridLayout()
         grid.setVerticalSpacing(round(4 * scale))
         self.ollama_row = _Row(grid, 0, "Ollama", "the local AI engine (from ollama.com, ~1 GB installed)")
         self.model_rows: dict[str, _Row] = {}
-        for i, m in enumerate(firstrun.required_models(cfg), start=1):
-            size = firstrun.MODEL_SIZES.get(m)
-            self.model_rows[m] = _Row(grid, i, m, f"AI model{f', ~{size:g} GB' if size else ''}")
+        self._build_model_rows()
         voice = QLabel("Voice (speaking/listening, ~0.5 GB) downloads by itself in the background the first time.",
                        objectName="note")
         voice.setWordWrap(True)
@@ -81,7 +102,11 @@ class SetupWindow(QWidget):
         self.go.clicked.connect(lambda: asyncio.ensure_future(self._run()))
         self.skip = QPushButton("Skip for now", objectName="secondary")
         self.skip.clicked.connect(self.close)
+        self.free = QPushButton("", objectName="secondary")
+        self.free.clicked.connect(lambda: asyncio.ensure_future(self._free_space()))
+        self.free.hide()
         buttons = QHBoxLayout()
+        buttons.addWidget(self.free)
         buttons.addStretch(1)
         buttons.addWidget(self.skip)
         buttons.addWidget(self.go)
@@ -90,6 +115,9 @@ class SetupWindow(QWidget):
         col.addWidget(head)
         col.addWidget(intro)
         col.addSpacing(round(6 * scale))
+        col.addLayout(brain_row)
+        col.addWidget(self.brain_note)
+        col.addSpacing(round(4 * scale))
         col.addLayout(grid)
         col.addStretch(1)
         col.addWidget(voice)
@@ -98,6 +126,78 @@ class SetupWindow(QWidget):
         self._cancel = False
         self._done = False
         self.status: firstrun.Status | None = None
+
+    # -- brain size ------------------------------------------------------------------------------
+
+    @staticmethod
+    def _with_model(cfg: Config, model: str) -> Config:
+        return replace(cfg, chat_model=model, extract_model=model, action_model=model, code_model=model)
+
+    @property
+    def restart_needed(self) -> bool:
+        return self.cfg.chat_model != self.started_with
+
+    def _build_model_rows(self) -> None:
+        for row in self.model_rows.values():
+            for w in (row.title, row.status, row.bar):
+                self.grid.removeWidget(w)
+                w.deleteLater()
+        self.model_rows = {}
+        for i, m in enumerate(firstrun.required_models(self.cfg), start=1):
+            size = firstrun.MODEL_SIZES.get(m)
+            kind = "the brain" if m == self.cfg.chat_model else "memory (finds related things it remembers)"
+            self.model_rows[m] = _Row(self.grid, i, m, f"AI model: {kind}{f', ~{size:g} GB' if size else ''}")
+
+    def _show_brain_note(self) -> None:
+        b = firstrun.brain_for(self.cfg.chat_model)
+        self.brain_note.setText(f"{b.note[0].upper()}{b.note[1:]}. Bigger is smarter but a bigger download; you can "
+                                "change it later in Settings." if b else "A custom model you picked in Settings.")
+
+    def _brain_changed(self) -> None:
+        model = self.brain.currentData()
+        if not model or model == self.cfg.chat_model:
+            return
+        self.cfg = self._with_model(self.cfg, model)
+        update_settings({"chat_model": model}, self.cfg)
+        self._show_brain_note()
+        self._build_model_rows()
+        if self._done:  # it was ready with the old brain: set up the new one
+            self._done = False
+            self.skip.show()
+            try:
+                self.go.clicked.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self.go.clicked.connect(lambda: asyncio.ensure_future(self._run()))
+            self.go.setText("Set everything up")
+        self.free.hide()
+
+        async def refresh() -> None:
+            self.show_status(await asyncio.to_thread(firstrun.check, self.cfg))
+
+        asyncio.ensure_future(refresh())
+
+    async def _show_free_space(self) -> None:
+        unused = await asyncio.to_thread(firstrun.unused_brains, self.cfg.chat_model, self.cfg.ollama_url)
+        if unused and self._done:
+            gb = sum(b.gb for b in unused)
+            self.free.setText(f"Remove unused brains (frees ~{gb:g} GB)")
+            self.free.setToolTip("Deletes " + ", ".join(b.model for b in unused) + " from Ollama.")
+            self.free.show()
+        else:
+            self.free.hide()
+
+    async def _free_space(self) -> None:
+        self.free.setEnabled(False)
+        try:
+            for b in await asyncio.to_thread(firstrun.unused_brains, self.cfg.chat_model, self.cfg.ollama_url):
+                await asyncio.to_thread(firstrun.delete_model, b.model, self.cfg.ollama_url)
+            self.free.hide()
+        except Exception as e:  # noqa: BLE001 - shown on the button
+            log.warning("removing unused models failed: %s", e)
+            self.free.setText("Couldn't remove them (see the log)")
+        finally:
+            self.free.setEnabled(True)
 
     # -- state ----------------------------------------------------------------------------------
 
@@ -121,6 +221,7 @@ class SetupWindow(QWidget):
 
     def _finish_ok(self) -> None:
         self._done = True
+        asyncio.ensure_future(self._show_free_space())
         self.go.setText("Let's go!")
         self.go.setEnabled(True)
         self.skip.hide()
@@ -149,6 +250,7 @@ class SetupWindow(QWidget):
         if self._busy:
             return
         self._busy = True
+        self.brain.setEnabled(False)
         self.go.setEnabled(False)
         self.go.setText("Working…")
         cancelled = lambda: self._cancel  # noqa: E731
@@ -183,3 +285,4 @@ class SetupWindow(QWidget):
             current.set(f"⚠ {(str(e) or e.__class__.__name__)[:70]}", "#ff8a80")
         finally:
             self._busy = False
+            self.brain.setEnabled(True)
